@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.env
+*.venv
+env/
+venv/
+ENV/
+-build/
+-dist/
+-*.egg-info/
+-*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# VS Code
+.vscode/
+
+# MacOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Data files
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.h5
+*.db
+
+# Environment files
+.env
+*.env
+
+# Model files
+*.h5
+*.pt
+*.pth
+*.joblib
+*.pickle
+*.pkl
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Others
+.idea/
+
+saved_model/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+saved_tokenizer/
+
+*.pth
+*.pt
+*.h5
+*.joblib
+*.pickle
+*.pkl
+*.log
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.rar
+*.zip
+*.tar.gz
+results/*
+best_enhanced_model/*
+0.26.*
