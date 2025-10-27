@@ -84,5 +84,10 @@ saved_tokenizer/
 *.zip
 *.tar.gz
 results/*
+catboost_info/
 best_enhanced_model/*
 0.26.*
+models/
+checkpoints/
+*.html
+*.ipynb_checkpoints
