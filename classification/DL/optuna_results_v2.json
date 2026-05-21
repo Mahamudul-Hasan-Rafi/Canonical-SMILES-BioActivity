@@ -1,0 +1,15 @@
+{
+    "best_value": 0.9071109956260014,
+    "best_params": {
+        "unfreeze_layers": 8,
+        "num_heads": 16,
+        "hidden_dim": 768,
+        "dropout": 0.1,
+        "num_classifier_layers": 4,
+        "batch_size": 64,
+        "learning_rate": 5.590475780851033e-06,
+        "weight_decay": 2.5951247879346216e-05,
+        "focal_alpha": 0.6
+    },
+    "n_trials": 20
+}

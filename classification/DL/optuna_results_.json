@@ -1,0 +1,18 @@
+{
+    "best_value": 0.9597115759386773,
+    "best_params": {
+        "unfreeze_layers": 9,
+        "num_heads": 16,
+        "hidden_dim": 512,
+        "dropout": 0.2,
+        "num_classifier_layers": 4,
+        "fusion_type": "gated",
+        "batch_size": 16,
+        "learning_rate": 6.637661174797277e-06,
+        "weight_decay": 2.009971751606238e-05,
+        "grad_accum_steps": 1,
+        "optimizer": "RMSprop",
+        "scheduler": "CosineAnnealingWarmRestarts"
+    },
+    "n_trials": 50
+}

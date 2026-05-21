@@ -1,0 +1,25 @@
+{
+  "best_value": 0.9602139361656057,
+  "best_params": {
+    "learning_rate": 1.5645438463293847e-05,
+    "dropout": 0.1,
+    "weight_decay": 4.848401495672273e-05,
+    "batch_size": 64,
+    "num_classifier_layers": 3
+  },
+  "fixed_arch": {
+    "num_heads": 8,
+    "n_cross_layers": 3,
+    "n_pool_layers": 4,
+    "freeze_bottom_n": 4
+  },
+  "n_trials_run": 33,
+  "bugs_fixed": [
+    "BUG-1: full train_df, no subsample",
+    "BUG-2: correct scheduler steps with grad_accum",
+    "BUG-3: LR ceiling 2e-5->1e-4",
+    "BUG-4: MAX_EPOCHS 25->40, patience 5->10",
+    "BUG-5: expanded search space, arch fixed by theory",
+    "BUG-6: grad accumulation in HPO loop"
+  ]
+}

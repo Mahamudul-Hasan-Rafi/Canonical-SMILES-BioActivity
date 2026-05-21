@@ -1,0 +1,14 @@
+{
+    "best_value": 0.938859295829544,
+    "best_params": {
+        "num_heads": 8,
+        "hidden_dim": 256,
+        "dropout": 0.2,
+        "num_classifier_layers": 2,
+        "n_cross_layers": 2,
+        "batch_size": 32,
+        "learning_rate": 1.7729256751915216e-05,
+        "weight_decay": 4.474247415920593e-05
+    },
+    "n_trials": 20
+}
