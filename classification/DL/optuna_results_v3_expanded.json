@@ -1,0 +1,16 @@
+{
+  "best_params": {
+  "unfreeze_layers": 6,
+  "num_heads": 4,
+  "hidden_dim": 512,
+  "dropout": 0.1,
+  "num_classifier_layers": 3,
+  "fusion_type": "bilinear",
+  "batch_size": 64,
+  "learning_rate": 8.27573453076396e-06,
+  "weight_decay": 0.00011007386215336239,
+  "grad_accum_steps": 8,
+  "optimizer": "RMSprop",
+  "scheduler": "OneCycleLR"
+}
+}
