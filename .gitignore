@@ -91,3 +91,8 @@ models/
 checkpoints/
 *.html
 *.ipynb_checkpoints
+
+Dataset/
+
+Reports/
+Statistical Analysis/
