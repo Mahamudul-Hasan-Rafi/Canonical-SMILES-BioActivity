@@ -5,7 +5,7 @@
         "hidden_dim": 256,
         "dropout": 0.1,
         "num_classifier_layers": 2,
-        "n_cross_layers": 3,
+        "n_cross_layers": 2,
         "batch_size": 32,
         "learning_rate": 9.8916998354799e-06,
         "weight_decay": 2.1247834038360546e-05
