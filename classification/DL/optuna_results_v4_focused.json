@@ -1,0 +1,13 @@
+{
+  "best_value": 0.9585855961197003,
+  "best_params": {
+    "learning_rate": 1.8567671738765757e-05,
+    "dropout": 0.05,
+    "decay_factor": 0.8540232530933745
+  },
+  "fixed_arch": {
+    "n_bert_layers": 12,
+    "D": 768
+  },
+  "n_trials_run": 30
+}

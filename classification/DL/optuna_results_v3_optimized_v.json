@@ -1,0 +1,23 @@
+{
+  "best_value": 0.9587588237841583,
+  "best_params": {
+    "num_heads": 4,
+    "unfreeze_layers": 4,
+    "num_classifier_layers": 2,
+    "n_cross_layers": 2,
+    "hidden_dim": 256,
+    "dropout": 0.09924489505911051,
+    "learning_rate": 1.7258376115747393e-05,
+    "weight_decay": 5.979436062226908e-05,
+    "decay_factor": 0.8450058695250287,
+    "loss_fn": "bce_weighted",
+    "scheduler": "Lambda"
+  },
+  "fixed_arch": {
+    "n_pool_layers": 4,
+    "fusion_type": "gated",
+    "grad_accum_steps": 1,
+    "batch_size": 32
+  },
+  "n_trials_run": 60
+}

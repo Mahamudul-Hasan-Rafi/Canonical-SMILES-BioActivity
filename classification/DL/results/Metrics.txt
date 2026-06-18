@@ -1,0 +1,147 @@
+Train+Val
+********************************************
+
+Dev set :  4669  (3673 Active, 996 Inactive)
+Test set:   825  (held out — never touched)
+Plan    : 5 folds × up to 50 epochs, collecting OOF predictions
+
+
+==========================================================
+  FOLD 1/5  —  train 3735  |  val(OOF) 934
+==========================================================
+Computing ECFP...
+Computing MACCS...
+Computing ECFP...
+Computing MACCS...
+  Ep 24/50 | AUC=0.9387
+  Early stop at epoch 24
+
+  Fold 1 Best AUC: 0.9427  →  models/kfold_v3_fold1.pth
+
+==========================================================
+  FOLD 2/5  —  train 3735  |  val(OOF) 934
+==========================================================
+Computing ECFP...
+Computing MACCS...
+Computing ECFP...
+Computing MACCS...
+  Ep 36/50 | AUC=0.9594
+  Early stop at epoch 36
+
+  Fold 2 Best AUC: 0.9620  →  models/kfold_v3_fold2.pth
+
+==========================================================
+  FOLD 3/5  —  train 3735  |  val(OOF) 934
+==========================================================
+Computing ECFP...
+Computing MACCS...
+Computing ECFP...
+Computing MACCS...
+  Ep 27/50 | AUC=0.9516
+  Early stop at epoch 27
+
+  Fold 3 Best AUC: 0.9527  →  models/kfold_v3_fold3.pth
+
+==========================================================
+  FOLD 4/5  —  train 3735  |  val(OOF) 934
+==========================================================
+Computing ECFP...
+Computing MACCS...
+Computing ECFP...
+Computing MACCS...
+  Ep 33/50 | AUC=0.9623
+  Early stop at epoch 33
+
+  Fold 4 Best AUC: 0.9648  →  models/kfold_v3_fold4.pth
+
+==========================================================
+  FOLD 5/5  —  train 3736  |  val(OOF) 933
+==========================================================
+Computing ECFP...
+Computing MACCS...
+Computing ECFP...
+Computing MACCS...
+  Ep 36/50 | AUC=0.9604
+  Early stop at epoch 36
+
+  Fold 5 Best AUC: 0.9616  →  models/kfold_v3_fold5.pth
+
+==========================================================
+K-Fold complete
+Mean AUC (val)  : 0.9568  ±  0.0081
+Per-fold        : ['0.9427', '0.9620', '0.9527', '0.9648', '0.9616']
+OOF AUC (dev)   : 0.9549  ← unbiased estimate
+
+OOF optimal threshold (max-F1): 0.4301
+
+==========================================================================
+Metric                  Mean ± Std      Min      Max                95% CI
+==========================================================================
+Accuracy        0.9308 +- 0.0046  0.9229  0.9347  [0.9251, 0.9365]
+Balanced Acc    0.8821 +- 0.0085  0.8722  0.8924  [0.8716, 0.8926]
+Precision       0.9463 +- 0.0065  0.9396  0.9560  [0.9382, 0.9544]
+Recall          0.9671 +- 0.0125  0.9456  0.9755  [0.9516, 0.9826]
+F1              0.9565 +- 0.0033  0.9508  0.9590  [0.9524, 0.9606]
+ROC-AUC         0.9570 +- 0.0091  0.9430  0.9653  [0.9457, 0.9683]
+AUPRC           0.9851 +- 0.0041  0.9787  0.9880  [0.9800, 0.9901]
+MCC             0.7896 +- 0.0099  0.7737  0.7998  [0.7773, 0.8019]
+Sensitivity     0.9671 +- 0.0125  0.9456  0.9755  [0.9516, 0.9826]
+Specificity     0.7972 +- 0.0282  0.7688  0.8392  [0.7622, 0.8322]
+NPV             0.8701 +- 0.0368  0.8068  0.8953  [0.8243, 0.9158]
+Cohen s k       0.7877 +- 0.0095  0.7734  0.7982  [0.7759, 0.7995]
+Brier           0.0595 +- 0.0057  0.0551  0.0666  [0.0525, 0.0666]
+==========================================================================
+
+  Paper-Ready Summary
+
+                Model (5-Fold CV)
+Accuracy          0.9308 +- 0.0046
+ROC-AUC           0.9570 +- 0.0091
+F1                0.9565 +- 0.0033
+MCC               0.7896 +- 0.0099
+AUPRC             0.9851 +- 0.0041
+Sensitivity       0.9671 +- 0.0125
+Specificity       0.7972 +- 0.0282
+Cohen s k         0.7877 +- 0.0095
+Brier             0.0595 +- 0.0057
+
+
+Test
+***********************************
+
+Selecting threshold from OOF predictions (unbiased)...
+  OOF AUC             : 0.9549
+  OOF best MCC        : 0.7881  at threshold 0.430
+Computing ECFP...
+Computing MACCS...
+
+Test set: 825 molecules
+Fold 1/5: models/kfold_v3_fold1.pth ...  done.
+Fold 2/5: models/kfold_v3_fold2.pth ...  done.
+Fold 3/5: models/kfold_v3_fold3.pth ...  done.
+Fold 4/5: models/kfold_v3_fold4.pth ...  done.
+Fold 5/5: models/kfold_v3_fold5.pth ...  done.
+
+============================================================
+  K-Fold (5) Ensemble — V3 Architecture (no TTA)
+  Threshold : 0.430  (OOF MCC optimal)
+============================================================
+  Accuracy              : 0.9273
+  Balanced Acc          : 0.8855
+  Precision             : 0.9513
+  Recall                : 0.9571
+  F1                    : 0.9542
+  ROC-AUC               : 0.9658
+  AUPRC                 : 0.9897
+  MCC                   : 0.7778
+  Sensitivity           : 0.9571
+  Specificity           : 0.8140
+
+              precision    recall  f1-score   support
+
+    Inactive       0.83      0.81      0.82       172
+      Active       0.95      0.96      0.95       653
+
+    accuracy                           0.93       825
+   macro avg       0.89      0.89      0.89       825
+weighted avg       0.93      0.93      0.93       825

@@ -1,19 +1,21 @@
 {
-  "best_value": 0.9490204710543694,
+  "best_value": 0.9545017539301026,
   "best_params": {
-    "num_heads": 4,
-    "unfreeze_layers": 8,
-    "num_classifier_layers": 2,
-    "n_cross_layers": 3,
+    "num_heads": 8,
+    "unfreeze_layers": 6,
+    "num_classifier_layers": 3,
+    "n_cross_layers": 4,
     "hidden_dim": 768,
     "dropout": 0.1,
-    "learning_rate": 1.1426348034394644e-05,
-    "weight_decay": 5.198257724043236e-05,
-    "scheduler": "Lambda"
+    "learning_rate": 1.3210642083591596e-05,
+    "weight_decay": 0.00014249960914166764,
+    "decay_factor": 0.815040046838321,
+    "loss_fn": "bce_weighted",
+    "scheduler": "OneCycleLR"
   },
   "fixed_arch": {
     "n_bert_layers": 12,
     "D": 768
   },
-  "n_trials_run": 50
+  "n_trials_run": 60
 }

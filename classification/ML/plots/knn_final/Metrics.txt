@@ -1,0 +1,122 @@
+Train+Val
+*******************************
+
+Class imbalance ratio (neg/pos): 0.27:1
+
+KNN hyperparameters (imbalance-aware):
+             n_neighbors = 11
+                 weights = distance
+                  metric = euclidean
+               algorithm = auto
+               leaf_size = 30
+                  n_jobs = -1
+
+  Fold       Acc   Bal.Acc      Prec       Rec        F1       AUC     AUPRC       MCC      Spec     Kappa     Brier
+--------------------------------------------------------------------------------------------------------------------
+     1    0.9113    0.8159    0.9128    0.9812    0.9458    0.9141    0.9621    0.7179    0.6505    0.7037    0.0739
+     2    0.9033    0.8098    0.9107    0.9725    0.9406    0.9117    0.9599    0.6929    0.6471    0.6822    0.0761
+     3    0.8965    0.7938    0.9034    0.9725    0.9367    0.9106    0.9601    0.6689    0.6150    0.6553    0.0776
+     4    0.9090    0.8173    0.9135    0.9769    0.9441    0.9476    0.9808    0.7118    0.6578    0.7002    0.0676
+     5    0.9226    0.8455    0.9262    0.9798    0.9522    0.9483    0.9801    0.7578    0.7112    0.7495    0.0636
+====================================================================================================================
+
+  Per-Metric Summary
+
+                   Mean +- Std     Min     Max            95% CI
+Metric                                                          
+Accuracy      0.9085 +- 0.0097  0.8965  0.9226  [0.9000, 0.9171]
+Balanced Acc  0.8165 +- 0.0187  0.7938  0.8455  [0.8000, 0.8329]
+Precision     0.9133 +- 0.0083  0.9034  0.9262  [0.9061, 0.9206]
+Recall        0.9766 +- 0.0040  0.9725  0.9812  [0.9731, 0.9801]
+F1            0.9439 +- 0.0058  0.9367  0.9522  [0.9388, 0.9490]
+ROC-AUC       0.9265 +- 0.0197  0.9106  0.9483  [0.9092, 0.9437]
+AUPRC         0.9686 +- 0.0108  0.9599  0.9808  [0.9591, 0.9781]
+MCC           0.7099 +- 0.0329  0.6689  0.7578  [0.6810, 0.7387]
+Sensitivity   0.9766 +- 0.0040  0.9725  0.9812  [0.9731, 0.9801]
+Specificity   0.6563 +- 0.0348  0.6150  0.7112  [0.6258, 0.6868]
+NPV           0.8830 +- 0.0215  0.8582  0.9048  [0.8642, 0.9018]
+Cohen's k     0.6982 +- 0.0345  0.6553  0.7495  [0.6679, 0.7284]
+Brier         0.0717 +- 0.0060  0.0636  0.0776  [0.0665, 0.0770]
+
+OOF ROC-AUC  : 0.9262
+OOF AUPRC    : 0.9683
+Optimal thr  : 0.626  (OOF F1-max threshold)
+
+  Paper-Ready Summary
+
+              KNN (5-Fold CV)
+Accuracy     0.9085 +- 0.0097
+ROC-AUC      0.9265 +- 0.0197
+F1           0.9439 +- 0.0058
+MCC          0.7099 +- 0.0329
+AUPRC        0.9686 +- 0.0108
+Sensitivity  0.9766 +- 0.0040
+Specificity  0.6563 +- 0.0348
+Cohen's k    0.6982 +- 0.0345
+Brier        0.0717 +- 0.0060
+
+
+Test
+***************************
+
+Final KNN trained  |  threshold = 0.626
+
+  Test Set Comparison
+
+              thr=0.626 (OOF-tuned)
+Accuracy                     0.9090
+Balanced Acc                 0.8502
+Precision                    0.9332
+Recall                       0.9526
+F1                           0.9428
+ROC-AUC                      0.9289
+AUPRC                        0.9700
+MCC                          0.7216
+Specificity                  0.7479
+NPV                          0.8102
+Cohen's k                    0.7207
+Brier                        0.0724
+
+  Classification Report  (threshold = 0.626)
+
+              precision    recall  f1-score   support
+
+    Inactive       0.81      0.75      0.78       234
+      Active       0.93      0.95      0.94       865
+
+    accuracy                           0.91      1099
+   macro avg       0.87      0.85      0.86      1099
+weighted avg       0.91      0.91      0.91      1099
+
+
+Test
+********************
+
+Final KNN trained  |  threshold = 0.626
+
+  Test Set Comparison
+
+              thr=0.626 (OOF-tuned)
+Accuracy                     0.9090
+Balanced Acc                 0.8502
+Precision                    0.9332
+Recall                       0.9526
+F1                           0.9428
+ROC-AUC                      0.9289
+AUPRC                        0.9700
+MCC                          0.7216
+Specificity                  0.7479
+NPV                          0.8102
+Cohen's k                    0.7207
+Brier                        0.0724
+
+  Classification Report  (threshold = 0.626)
+
+              precision    recall  f1-score   support
+
+    Inactive       0.81      0.75      0.78       234
+      Active       0.93      0.95      0.94       865
+
+    accuracy                           0.91      1099
+   macro avg       0.87      0.85      0.86      1099
+weighted avg       0.91      0.91      0.91      1099

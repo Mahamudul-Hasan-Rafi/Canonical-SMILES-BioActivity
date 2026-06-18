@@ -1,0 +1,99 @@
+Train+Val
+
+***************************
+
+Class imbalance ratio (neg/pos): 0.27:1
+
+CatBoost hyperparameters (imbalance-aware):
+           loss_function = Logloss
+             eval_metric = PRAUC
+             l2_leaf_reg = 5
+         random_strength = 1.0
+        min_data_in_leaf = 20
+          bootstrap_type = Bernoulli
+               subsample = 0.8
+                     rsm = 0.8
+                 verbose = False
+            thread_count = -1
+             random_seed = 42
+
+  Fold       Acc   Bal.Acc      Prec       Rec        F1       AUC     AUPRC       MCC      Spec     Kappa     Brier
+--------------------------------------------------------------------------------------------------------------------
+     1    0.9058    0.8998    0.9682    0.9102    0.9383    0.9520    0.9826    0.7463    0.8894    0.7400    0.0626
+     2    0.8801    0.8963    0.9770    0.8680    0.9193    0.9617    0.9858    0.7077    0.9246    0.6891    0.0632
+     3    0.8844    0.8917    0.9714    0.8789    0.9229    0.9516    0.9831    0.7084    0.9045    0.6944    0.0792
+     4    0.9111    0.8816    0.9527    0.9332    0.9429    0.9477    0.9822    0.7438    0.8300    0.7430    0.0774
+     5    0.9121    0.9039    0.9684    0.9183    0.9427    0.9650    0.9889    0.7601    0.8894    0.7552    0.0597
+====================================================================================================================
+
+  Per-Metric Summary
+
+                   Mean +- Std     Min     Max            95% CI
+Metric                                                          
+Accuracy      0.8987 +- 0.0153  0.8801  0.9121  [0.8853, 0.9121]
+Balanced Acc  0.8947 +- 0.0086  0.8816  0.9039  [0.8872, 0.9022]
+Precision     0.9675 +- 0.0090  0.9527  0.9770  [0.9596, 0.9755]
+Recall        0.9017 +- 0.0274  0.8680  0.9332  [0.8777, 0.9257]
+F1            0.9332 +- 0.0113  0.9193  0.9429  [0.9233, 0.9431]
+ROC-AUC       0.9556 +- 0.0074  0.9477  0.9650  [0.9491, 0.9620]
+AUPRC         0.9845 +- 0.0028  0.9822  0.9889  [0.9821, 0.9870]
+MCC           0.7333 +- 0.0238  0.7077  0.7601  [0.7124, 0.7541]
+Sensitivity   0.9017 +- 0.0274  0.8680  0.9332  [0.8777, 0.9257]
+Specificity   0.8876 +- 0.0353  0.8300  0.9246  [0.8567, 0.9185]
+NPV           0.7143 +- 0.0504  0.6548  0.7721  [0.6700, 0.7585]
+Cohen's k     0.7243 +- 0.0303  0.6891  0.7552  [0.6977, 0.7509]
+Brier         0.0684 +- 0.0092  0.0597  0.0792  [0.0604, 0.0765]
+
+OOF ROC-AUC  : 0.9549
+OOF AUPRC    : 0.9842
+OOF MCC      : 0.7689
+Optimal thr  : 0.348  (OOF MCC-max threshold)
+Avg best_iter: 576  -> use as iterations for final model
+
+  Paper-Ready Summary
+
+            CatBoost (5-Fold CV)
+Accuracy        0.8987 +- 0.0153
+ROC-AUC         0.9556 +- 0.0074
+F1              0.9332 +- 0.0113
+MCC             0.7333 +- 0.0238
+AUPRC           0.9845 +- 0.0028
+Sensitivity     0.9017 +- 0.0274
+Specificity     0.8876 +- 0.0353
+Cohen's k       0.7243 +- 0.0303
+Brier           0.0684 +- 0.0092
+
+
+
+Test
+***************************
+
+
+Final model trained  |  iterations = 576  |  threshold = 0.348
+
+  Test Set Comparison
+
+              thr=0.348 (OOF-tuned)
+Accuracy                     0.9164
+Balanced Acc                 0.8273
+Precision                    0.9195
+Recall                       0.9801
+F1                           0.9489
+ROC-AUC                      0.9486
+AUPRC                        0.9836
+MCC                          0.7320
+Specificity                  0.6744
+NPV                          0.8992
+Cohen's k                    0.7209
+Brier                        0.0637
+
+  Classification Report  (threshold = 0.348)
+
+              precision    recall  f1-score   support
+
+    Inactive       0.90      0.67      0.77       172
+      Active       0.92      0.98      0.95       653
+
+    accuracy                           0.92       825
+   macro avg       0.91      0.83      0.86       825
+weighted avg       0.92      0.92      0.91       825
