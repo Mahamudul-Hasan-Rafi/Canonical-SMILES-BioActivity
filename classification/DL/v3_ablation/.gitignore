@@ -1,0 +1,6 @@
+cache/
+logs/
+results/
+splits/
+*.log
+__pycache__/
