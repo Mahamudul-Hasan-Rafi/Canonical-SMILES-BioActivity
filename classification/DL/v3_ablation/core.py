@@ -1,0 +1,552 @@
+"""
+V3 model + training loop, generalised over the SMILES backbone.
+
+Faithful to `bioactivity_dl 8_2_C_v3_re.ipynb` (FineTunedBERTaECFP_v3, FocalLoss,
+LLRD, warmup-cosine, WeightedRandomSampler, SMILES augmentation, early stopping
+on val AUROC). With backbone="molformer" the parameter initialisation, forward
+pass and (without augmentation) the whole training run are bit-identical to
+`v3_core.py`, which produced the reproduction/ablation results
+(tests/test_core_parity.py). One deliberate difference: SMILES augmentation is
+now seeded (RDKit's doRandom ignores every seed), so runs are fully reproducible.
+
+Speed-ups that do not change the maths: dynamic padding, MoLFormer sync-free
+attention, fused AdamW, TF32, best checkpoint kept in RAM.
+"""
+from __future__ import annotations
+
+import contextlib
+import math
+import random
+import time
+from dataclasses import asdict, dataclass, field
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import backbones
+from data import ECFP_BITS, MACCS_BITS, N_DESC
+
+D = 768
+MODALITIES = ("smiles", "ecfp", "maccs", "desc")
+
+HP_SETS = {
+    # optuna_results_v3__.json (the notebook's tuned V3)
+    "tuned": {"num_heads": 4, "hidden_dim": 256, "dropout": 0.1, "num_classifier_layers": 2,
+              "n_cross_layers": 2, "batch_size": 32, "learning_rate": 9.8916998354799e-06,
+              "weight_decay": 2.1247834038360546e-05},
+    # notebook cell 15 "manual fallback if HPO hasn't been run" (pre-tuning config)
+    "untuned": {"num_heads": 8, "hidden_dim": 512, "dropout": 0.2, "num_classifier_layers": 3,
+                "n_cross_layers": 3, "batch_size": 32, "learning_rate": 5e-6, "weight_decay": 1e-4},
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset with dynamic padding
+# ─────────────────────────────────────────────────────────────────────────────
+def random_smiles(smi):
+    """Random non-canonical SMILES (same algorithm as MolToSmiles(doRandom=True), which the
+    notebook used), but seeded from Python's `random`, so augmentation is reproducible.
+    RDKit's doRandom draws from an internal generator that no seed call resets."""
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smi)
+    if not mol:
+        return smi
+    return Chem.MolToRandomSmilesVect(mol, 1, randomSeed=random.randrange(2 ** 31))[0]
+
+
+class V3Dataset(torch.utils.data.Dataset):
+    def __init__(self, feats, idx, tokenizer, scaler, augment=False, max_len=512):
+        self.tok = tokenizer
+        self.smiles = [feats["smiles"][i] for i in idx]
+        self.labels = feats["labels"][idx].astype(np.float32)
+        self.ecfp = feats["ecfp"][idx].astype(np.float32)
+        self.maccs = feats["maccs"][idx].astype(np.float32)
+        self.desc = scaler.transform(feats["desc_raw"][idx]).astype(np.float32)
+        self.augment, self.max_len = augment, max_len
+        enc = tokenizer(self.smiles, truncation=True, max_length=max_len)
+        self.ids = [np.array(x, dtype=np.int64) for x in enc["input_ids"]]
+
+    def __len__(self):
+        return len(self.smiles)
+
+    def __getitem__(self, i):
+        if self.augment and random.random() < 0.5:
+            ids = np.array(self.tok(random_smiles(self.smiles[i]), truncation=True,
+                                    max_length=self.max_len)["input_ids"], dtype=np.int64)
+        else:
+            ids = self.ids[i]
+        return ids, self.ecfp[i], self.maccs[i], self.desc[i], self.labels[i]
+
+
+def make_collate(pad_id, fixed_len=None):
+    def collate(batch):
+        L = fixed_len or max(len(b[0]) for b in batch)
+        ids = torch.full((len(batch), L), pad_id, dtype=torch.long)
+        mask = torch.zeros((len(batch), L), dtype=torch.long)
+        for j, b in enumerate(batch):
+            ids[j, :len(b[0])] = torch.from_numpy(b[0])
+            mask[j, :len(b[0])] = 1
+        return {
+            "input_ids": ids, "attention_mask": mask,
+            "ecfp": torch.from_numpy(np.stack([b[1] for b in batch])),
+            "maccs": torch.from_numpy(np.stack([b[2] for b in batch])),
+            "descriptors": torch.from_numpy(np.stack([b[3] for b in batch])),
+            "labels": torch.tensor(np.array([b[4] for b in batch]), dtype=torch.float),
+        }
+    return collate
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MoLFormer speed patch (removes 24 GPU->CPU syncs per forward pass)
+# ─────────────────────────────────────────────────────────────────────────────
+def _fast_feature_map_forward(self, query, key):
+    """MolformerFeatureMap.forward with the orthogonal random features drawn and
+    QR-decomposed on the CPU (64x64, ~0.3 ms) and copied asynchronously instead of
+    a blocking GPU QR in every layer. Same distribution, CPU random generator."""
+    if not self.deterministic or self.training:
+        q = self.query_size
+        blocks = []
+        for _ in range(math.ceil(self.num_components / q)):
+            block = torch.randn(q, q)
+            norms = torch.linalg.norm(block, dim=1).unsqueeze(0)
+            Q, _ = torch.linalg.qr(block)
+            blocks.append(Q * norms)
+        w = torch.cat(blocks, dim=1)[:, : self.num_components]
+        self.weight = w.pin_memory().to(query.device, non_blocking=True)
+    query = torch.matmul(query, self.weight)
+    key = torch.matmul(key, self.weight)
+    return self.kernel(query), self.kernel(key)
+
+
+def _make_fast_attn_forward(mod):
+    apply_rotary_pos_emb = mod.apply_rotary_pos_emb
+
+    def forward(self, hidden_states, attention_mask=None, position_ids=None, head_mask=None,
+                output_attentions=False):
+        """MolformerSelfAttention.forward minus the blocking `torch.equal` sanity check."""
+        query_layer = self.transpose_for_scores(self.query(hidden_states))
+        key_layer = self.transpose_for_scores(self.key(hidden_states))
+        value_layer = self.transpose_for_scores(self.value(hidden_states))
+        kv_seq_len = key_layer.shape[-2]
+        cos, sin = self.rotary_embeddings(value_layer, seq_len=kv_seq_len)
+        query_layer, key_layer = apply_rotary_pos_emb(query_layer, key_layer, cos, sin, position_ids)
+        query_layer, key_layer = self.feature_map(query_layer, key_layer)
+        if attention_mask is not None:
+            attention_mask = (attention_mask == 0).to(attention_mask.dtype)
+            per_query_attn = attention_mask[:, 0, -1]
+            key_layer = key_layer * per_query_attn[:, None, -kv_seq_len:, None]
+        key_value = torch.matmul(key_layer.transpose(-1, -2), value_layer)
+        norm = torch.matmul(query_layer, key_layer.sum(dim=-2).unsqueeze(-1)).clamp(min=self.eps)
+        context_layer = torch.matmul(query_layer, key_value) / norm
+        if head_mask is not None:
+            context_layer = context_layer * head_mask
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        context_layer = context_layer.view(*(context_layer.size()[:-2] + (self.all_head_size,)))
+        return (context_layer,)
+    return forward
+
+
+def patch_molformer_fast(bert):
+    import sys
+    import types
+    for layer in bert.encoder.layer:
+        attn = layer.attention.self
+        mod = sys.modules[type(attn).__module__]
+        attn.forward = types.MethodType(_make_fast_attn_forward(mod), attn)
+        attn.feature_map.forward = types.MethodType(_fast_feature_map_forward, attn.feature_map)
+    return bert
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model
+# ─────────────────────────────────────────────────────────────────────────────
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.75, gamma=2.0, smoothing=0.05):
+        super().__init__()
+        self.alpha, self.gamma, self.smoothing = alpha, gamma, smoothing
+
+    def forward(self, logits, targets):
+        y = targets * (1 - self.smoothing) + 0.5 * self.smoothing
+        bce = F.binary_cross_entropy_with_logits(logits, y, reduction="none")
+        pt = torch.exp(-bce)
+        a_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+        return (a_t * (1 - pt) ** self.gamma * bce).mean()
+
+
+class V3(nn.Module):
+    """FineTunedBERTaECFP_v3 with ablation switches and a pluggable SMILES encoder.
+    Defaults (backbone='molformer', all switches on) == the notebook model."""
+
+    def __init__(self, backbone="molformer", modalities=MODALITIES, fusion="xattn", use_type_emb=True,
+                 use_gate=True, pooling="triple", n_pool_layers=4, freeze_bottom_n=None,
+                 freeze_all_bert=False, num_heads=8, dropout=0.2, hidden_dim=512,
+                 num_classifier_layers=4, n_cross_layers=3, fast_molformer=True):
+        super().__init__()
+        self.backbone = backbone
+        self.modalities = tuple(m for m in MODALITIES if m in modalities)
+        self.fusion, self.use_type_emb, self.use_gate = fusion, use_type_emb, use_gate
+        self.pooling = pooling
+        self.freeze_all_bert = freeze_all_bert
+        n_mod = len(self.modalities)
+
+        if "smiles" in self.modalities:
+            self.bert = backbones.load_encoder(backbone, fast=fast_molformer)
+            n_layers = len(self.bert.encoder.layer)
+            h = self.bert.config.hidden_size
+            # MoLFormer: freeze 4/12 (notebook). Others: same fraction (bottom third).
+            if freeze_bottom_n is None:
+                freeze_bottom_n = round(n_layers / 3)
+            self.n_pool_layers = min(n_pool_layers, n_layers)
+            n_freeze = n_layers if freeze_all_bert else freeze_bottom_n
+            for layer in self.bert.encoder.layer[:n_freeze]:
+                for p in layer.parameters():
+                    p.requires_grad = False
+            if freeze_all_bert:
+                for p in self.bert.parameters():
+                    p.requires_grad = False
+            self.layer_weights = nn.Parameter(torch.zeros(self.n_pool_layers))
+            self.token_attn = nn.Linear(h, 1)
+            if h != D:     # e.g. ChemBERTa-77M (384) -> 768; absent for MoLFormer
+                self.smiles_proj = nn.Linear(h, D)
+
+        self.modal_type_embed = nn.Embedding(4, D)
+        nn.init.xavier_uniform_(self.modal_type_embed.weight)
+
+        if "ecfp" in self.modalities:
+            self.ecfp_proj = nn.Sequential(
+                nn.Linear(ECFP_BITS, 512), nn.GELU(), nn.LayerNorm(512), nn.Dropout(dropout * 0.5),
+                nn.Linear(512, D), nn.GELU(), nn.LayerNorm(D), nn.Dropout(dropout))
+        if "maccs" in self.modalities:
+            self.maccs_proj = nn.Sequential(
+                nn.Linear(MACCS_BITS, 256), nn.GELU(), nn.LayerNorm(256), nn.Dropout(dropout * 0.5),
+                nn.Linear(256, D), nn.GELU(), nn.LayerNorm(D), nn.Dropout(dropout))
+        if "desc" in self.modalities:
+            self.desc_proj = nn.Sequential(
+                nn.Linear(N_DESC, 64), nn.GELU(), nn.LayerNorm(64), nn.Dropout(dropout * 0.5),
+                nn.Linear(64, D), nn.GELU(), nn.LayerNorm(D), nn.Dropout(dropout))
+
+        if fusion == "xattn":
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=D, nhead=num_heads, dim_feedforward=D * 4,
+                dropout=dropout, batch_first=True, norm_first=True)
+            self.cross_modal = nn.TransformerEncoder(enc_layer, num_layers=n_cross_layers)
+        self.gate = nn.Sequential(nn.Linear(D, D), nn.LayerNorm(D), nn.Sigmoid())
+        self.fusion_proj = nn.Linear(D * n_mod, D)
+
+        layers, in_dim = [], D
+        for i in range(num_classifier_layers):
+            out_dim = hidden_dim // (2 ** i)
+            layers += [nn.Linear(in_dim, out_dim), nn.LayerNorm(out_dim), nn.GELU(),
+                       nn.Dropout(dropout if i < num_classifier_layers - 1 else dropout * 0.5)]
+            in_dim = out_dim
+        layers.append(nn.Linear(in_dim, 1))
+        self.classifier = nn.Sequential(*layers)
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.freeze_all_bert and hasattr(self, "bert"):
+            self.bert.eval()   # frozen feature extractor: no dropout
+        return self
+
+    # split into steps so explainability code can hook each stage
+    def smiles_hidden(self, input_ids=None, attention_mask=None, inputs_embeds=None):
+        with torch.no_grad() if self.freeze_all_bert else contextlib.nullcontext():
+            out = self.bert(input_ids=input_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds,
+                            output_hidden_states=True)
+        selected = out.hidden_states[-self.n_pool_layers:]
+        w = torch.softmax(self.layer_weights, dim=0)
+        return sum(wi * h for wi, h in zip(w, selected))
+
+    def pool(self, hidden, attention_mask):
+        cls_pool = hidden[:, 0]
+        if self.pooling == "cls":
+            v = cls_pool
+        else:
+            m = attention_mask.unsqueeze(-1).to(hidden.dtype)
+            mean_pool = (hidden * m).sum(1) / m.sum(1).clamp(min=1e-9)
+            if self.pooling == "mean":
+                v = mean_pool
+            else:
+                scores = self.token_attn(hidden).squeeze(-1).masked_fill(~attention_mask.bool(), float("-inf"))
+                attn_pool = (hidden * torch.softmax(scores, dim=-1).unsqueeze(-1)).sum(1)
+                v = (cls_pool + mean_pool + attn_pool) / 3
+        return self.smiles_proj(v) if hasattr(self, "smiles_proj") else v
+
+    def modality_tokens(self, input_ids, attention_mask, ecfp, maccs, descriptors, inputs_embeds=None):
+        """[B, n_mod, D] projected modality tokens, in MODALITIES order."""
+        embs = []
+        for m in self.modalities:
+            if m == "smiles":
+                embs.append(self.pool(self.smiles_hidden(input_ids, attention_mask, inputs_embeds), attention_mask))
+            elif m == "ecfp":
+                embs.append(self.ecfp_proj(ecfp))
+            elif m == "maccs":
+                embs.append(self.maccs_proj(maccs))
+            else:
+                embs.append(self.desc_proj(descriptors))
+        return torch.stack(embs, dim=1)
+
+    def fuse(self, tokens):
+        """modality tokens [B, n_mod, D] -> logit [B]"""
+        B = tokens.size(0)
+        if self.fusion == "xattn":
+            if self.use_type_emb:
+                ids = [MODALITIES.index(m) for m in self.modalities]
+                t = self.modal_type_embed(torch.tensor(ids, device=tokens.device))
+                tokens = tokens + t.unsqueeze(0)
+            tokens = self.cross_modal(tokens)
+        if self.use_gate:
+            tokens = self.gate(tokens) * tokens
+        fused = self.fusion_proj(tokens.reshape(B, -1))
+        return self.classifier(fused).squeeze(-1)
+
+    def forward(self, input_ids, attention_mask, ecfp, maccs, descriptors):
+        return self.fuse(self.modality_tokens(input_ids, attention_mask, ecfp, maccs, descriptors))
+
+
+def build_llrd_optimizer(model, base_lr, weight_decay, decay_factor=0.95):
+    """Same grouping as the notebook's build_llrd_optimizer."""
+    no_decay = ["bias", "LayerNorm.weight", "LayerNorm.bias"]
+    groups = []
+    head = [(n, p) for n, p in model.named_parameters() if not n.startswith("bert.") and p.requires_grad]
+    groups += [
+        {"params": [p for n, p in head if not any(nd in n for nd in no_decay)], "lr": base_lr, "weight_decay": weight_decay},
+        {"params": [p for n, p in head if any(nd in n for nd in no_decay)], "lr": base_lr, "weight_decay": 0.0},
+    ]
+    if hasattr(model, "bert"):
+        n_layers = len(model.bert.encoder.layer)
+        for depth, layer in enumerate(reversed(list(model.bert.encoder.layer))):
+            lr_l = base_lr * (decay_factor ** depth)
+            lp = [(n, p) for n, p in layer.named_parameters() if p.requires_grad]
+            if lp:
+                groups += [
+                    {"params": [p for n, p in lp if not any(nd in n for nd in no_decay)], "lr": lr_l, "weight_decay": weight_decay},
+                    {"params": [p for n, p in lp if any(nd in n for nd in no_decay)], "lr": lr_l, "weight_decay": 0.0},
+                ]
+        ep = [(n, p) for n, p in model.bert.embeddings.named_parameters() if p.requires_grad]
+        if ep:
+            emb_lr = base_lr * (decay_factor ** n_layers)
+            groups += [
+                {"params": [p for n, p in ep if not any(nd in n for nd in no_decay)], "lr": emb_lr, "weight_decay": weight_decay},
+                {"params": [p for n, p in ep if any(nd in n for nd in no_decay)], "lr": emb_lr, "weight_decay": 0.0},
+            ]
+        # Parameters outside encoder/embeddings (MoLFormer's final LayerNorm, RoBERTa's
+        # unused pooler) are left out of the optimizer, exactly like the notebook.
+    groups = [g for g in groups if g["params"]]
+    return torch.optim.AdamW(groups, fused=torch.cuda.is_available())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Run configuration
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class RunCfg:
+    variant: str = "full"
+    backbone: str = "molformer"
+    hp_set: str = "tuned"
+    modalities: tuple = MODALITIES
+    fusion: str = "xattn"
+    use_type_emb: bool = True
+    use_gate: bool = True
+    pooling: str = "triple"
+    n_pool_layers: int = 4
+    freeze_bottom_n: int | None = None      # None = bottom third (4 for MoLFormer)
+    freeze_all_bert: bool = False
+    loss: str = "focal"                     # focal | bce
+    augment: bool = True
+    sampler: bool = True
+    llrd: float = 0.95
+    fast_molformer: bool = True
+    max_epochs: int = 50
+    patience: int = 12
+    grad_accum: int = 2
+
+    @property
+    def hp(self):
+        return HP_SETS[self.hp_set]
+
+    def to_dict(self):
+        d = asdict(self)
+        d["modalities"] = list(d["modalities"])
+        d["hp"] = dict(self.hp)
+        return d
+
+
+VARIANTS = {
+    # name: (description, overrides)
+    "full":            ("Full V3 (reference)", {}),
+    "no_smiles":       ("- SMILES language-model branch", {"modalities": ("ecfp", "maccs", "desc")}),
+    "no_ecfp":         ("- ECFP", {"modalities": ("smiles", "maccs", "desc")}),
+    "no_maccs":        ("- MACCS", {"modalities": ("smiles", "ecfp", "desc")}),
+    "no_desc":         ("- Descriptors", {"modalities": ("smiles", "ecfp", "maccs")}),
+    "smiles_only":     ("SMILES language model only", {"modalities": ("smiles",)}),
+    "concat_fusion":   ("Concat fusion (no cross-modal Transformer, no type emb, no gate)",
+                        {"fusion": "concat", "use_type_emb": False, "use_gate": False}),
+    "no_type_emb":     ("- Modality type embeddings", {"use_type_emb": False}),
+    "no_gate":         ("- Per-modality gate", {"use_gate": False}),
+    "last_layer_pool": ("Last encoder layer only (no multi-layer mix)", {"n_pool_layers": 1}),
+    "cls_pool":        ("CLS pooling only (no mean/attn pooling)", {"pooling": "cls"}),
+    "frozen_bert":     ("Frozen language model (no fine-tuning)", {"freeze_all_bert": True}),
+    "bce_loss":        ("Plain BCE instead of Focal loss", {"loss": "bce"}),
+    "no_augment":      ("- SMILES enumeration augmentation", {"augment": False}),
+    "no_sampler":      ("Unbalanced (a): no WeightedRandomSampler, natural 79/21 ratio", {"sampler": False}),
+    "no_llrd":         ("- LLRD (flat LR for all encoder layers)", {"llrd": 1.0}),
+    "vanilla":         ("Unbalanced (b): no sampler + plain BCE (no imbalance handling at all)",
+                        {"sampler": False, "loss": "bce"}),
+}
+
+
+def make_cfg(variant="full", backbone="molformer", hp_set="tuned", **extra):
+    _, ov = VARIANTS[variant]
+    cfg = RunCfg(variant=variant, backbone=backbone, hp_set=hp_set, **ov)
+    for k, v in extra.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+def build_model(cfg: RunCfg):
+    hp = cfg.hp
+    return V3(backbone=cfg.backbone, modalities=cfg.modalities, fusion=cfg.fusion,
+              use_type_emb=cfg.use_type_emb, use_gate=cfg.use_gate, pooling=cfg.pooling,
+              n_pool_layers=cfg.n_pool_layers, freeze_bottom_n=cfg.freeze_bottom_n,
+              freeze_all_bert=cfg.freeze_all_bert, num_heads=hp["num_heads"], dropout=hp["dropout"],
+              hidden_dim=hp["hidden_dim"], num_classifier_layers=hp["num_classifier_layers"],
+              n_cross_layers=hp["n_cross_layers"], fast_molformer=cfg.fast_molformer)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Train / predict
+# ─────────────────────────────────────────────────────────────────────────────
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def setup_torch():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = False  # variable sequence lengths
+
+
+@torch.no_grad()
+def predict(model, ds, device, collate, batch_size=64, eval_seed=None, amp_dtype=torch.bfloat16):
+    """Probabilities for ds. MoLFormer redraws its random attention features on every
+    forward pass; eval_seed makes that draw repeatable without touching the training RNG."""
+    model.eval()
+    cpu_state = torch.get_rng_state()
+    cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    if eval_seed is not None:
+        torch.manual_seed(eval_seed)
+    probs = []
+    try:
+        for i in range(0, len(ds), batch_size):
+            b = collate([ds[j] for j in range(i, min(i + batch_size, len(ds)))])
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=device.type == "cuda"):
+                lg = model(input_ids=b["input_ids"].to(device, non_blocking=True),
+                           attention_mask=b["attention_mask"].to(device, non_blocking=True),
+                           ecfp=b["ecfp"].to(device), maccs=b["maccs"].to(device),
+                           descriptors=b["descriptors"].to(device))
+            probs.append(torch.sigmoid(lg.float()).cpu().numpy())
+    finally:
+        if eval_seed is not None:
+            torch.set_rng_state(cpu_state)
+            if cuda_state is not None:
+                torch.cuda.set_rng_state_all(cuda_state)
+    return np.concatenate(probs)
+
+
+def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, device,
+              tokenizer, log=print, guard=None, save_path=None):
+    """Train on tr_idx, early-stop on AUROC of vl_idx; return predictions of the best
+    checkpoint on vl_idx and on every eval set (optionally save that checkpoint)."""
+    from sklearn.metrics import roc_auc_score
+    from sklearn.preprocessing import StandardScaler
+    from torch.optim.lr_scheduler import LambdaLR
+
+    set_seed(seed)
+    hp = cfg.hp
+    augment_ok = cfg.augment and "smiles" in cfg.modalities
+    scaler = StandardScaler().fit(feats["desc_raw"][tr_idx])
+    tr_ds = V3Dataset(feats, tr_idx, tokenizer, scaler, augment=augment_ok)
+    vl_ds = V3Dataset(feats, vl_idx, tokenizer, scaler)
+    ev_ds = {k: V3Dataset(feats, idx, tokenizer, scaler) for k, idx in eval_sets.items()}
+    collate = make_collate(tokenizer.pad_token_id)
+
+    if cfg.sampler:
+        lbl = tr_ds.labels.astype(int)
+        w = (1.0 / np.bincount(lbl))[lbl]
+        sampler = torch.utils.data.WeightedRandomSampler(torch.tensor(w, dtype=torch.float), len(w), replacement=True)
+        loader = torch.utils.data.DataLoader(tr_ds, batch_size=hp["batch_size"], sampler=sampler,
+                                             collate_fn=collate, num_workers=0, pin_memory=True)
+    else:
+        loader = torch.utils.data.DataLoader(tr_ds, batch_size=hp["batch_size"], shuffle=True,
+                                             collate_fn=collate, num_workers=0, pin_memory=True)
+
+    model = build_model(cfg).to(device)
+    opt = build_llrd_optimizer(model, hp["learning_rate"], hp["weight_decay"], cfg.llrd)
+    crit = FocalLoss(alpha=0.5, gamma=2.0, smoothing=0.05) if cfg.loss == "focal" else nn.BCEWithLogitsLoss()
+
+    total = (len(loader) // cfg.grad_accum) * cfg.max_epochs
+    warm = max(1, int(0.10 * total))
+
+    def lr_lambda(step):
+        if step < warm:
+            return step / warm
+        prog = (step - warm) / max(1, total - warm)
+        return max(1e-7, 0.5 * (1.0 + math.cos(math.pi * prog)))
+    sch = LambdaLR(opt, lr_lambda)
+
+    best_auc, best_state, best_ep, pat = -1.0, None, 0, 0
+    history = []
+    t0 = time.time()
+    for ep in range(cfg.max_epochs):
+        model.train()
+        opt.zero_grad(set_to_none=True)
+        run_loss = 0.0
+        for bi, b in enumerate(loader):
+            if guard is not None:
+                guard.check()
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                lg = model(input_ids=b["input_ids"].to(device, non_blocking=True),
+                           attention_mask=b["attention_mask"].to(device, non_blocking=True),
+                           ecfp=b["ecfp"].to(device, non_blocking=True),
+                           maccs=b["maccs"].to(device, non_blocking=True),
+                           descriptors=b["descriptors"].to(device, non_blocking=True))
+                loss = crit(lg.float(), b["labels"].to(device)) / cfg.grad_accum
+            loss.backward()
+            run_loss += loss.item() * cfg.grad_accum
+            if (bi + 1) % cfg.grad_accum == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                opt.step()
+                opt.zero_grad(set_to_none=True)
+                sch.step()
+        vp = predict(model, vl_ds, device, collate, eval_seed=1000 + ep)
+        auc = roc_auc_score(vl_ds.labels, vp)
+        history.append((ep + 1, run_loss / len(loader), float(auc)))
+        if auc > best_auc:
+            best_auc, best_ep, pat = auc, ep + 1, 0
+            best_state = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
+        else:
+            pat += 1
+            if pat >= cfg.patience:
+                break
+    train_s = time.time() - t0
+
+    model.load_state_dict(best_state)
+    if save_path:
+        torch.save({"cfg": cfg.to_dict(), "state_dict": best_state, "scaler_mean": scaler.mean_,
+                    "scaler_scale": scaler.scale_}, save_path)
+    out = {"val_probs": predict(model, vl_ds, device, collate, eval_seed=7), "val_labels": vl_ds.labels}
+    for k, ds in ev_ds.items():
+        out[f"{k}_probs"] = predict(model, ds, device, collate, eval_seed=7)
+        out[f"{k}_labels"] = ds.labels
+    out.update(best_val_auc=float(best_auc), best_epoch=best_ep, epochs_run=len(history),
+               train_seconds=train_s, history=history,
+               n_trainable=sum(p.numel() for p in model.parameters() if p.requires_grad))
+    del model, opt
+    torch.cuda.empty_cache()
+    return out

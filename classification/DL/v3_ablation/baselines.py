@@ -1,9 +1,9 @@
 """
-Classical baselines on exactly the same 5 folds + held-out test set as V3.
+Classical baselines on exactly the same folds + held-out test set as V3, for each split.
 Answers the reviewer question "does the deep model beat a fingerprint forest?".
 
 CPU only, n_jobs capped (default 6) so the machine stays cool.
-Writes results/baselines/<name>.npz with OOF + fold test probabilities.
+Writes results/baselines/<split>/<name>.npz with OOF + per-fold test probabilities.
 """
 import argparse
 import os
@@ -13,9 +13,10 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import v3_core as C
+import data
+import splits
 
-OUT = os.path.join(C.HERE, "results", "baselines")
+OUT = os.path.join(data.HERE, "results", "baselines")
 
 
 def models(n_jobs):
@@ -38,12 +39,14 @@ def models(n_jobs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-jobs", type=int, default=6)
+    ap.add_argument("--split", default="random", choices=["random", "scaffold"])
     args = ap.parse_args()
-    os.makedirs(OUT, exist_ok=True)
-    df = C.load_df()
-    feats = C.get_features(df)
-    tr, va, te = C.notebook_splits(df)
-    dev_idx, folds = C.notebook_folds(df, tr, va)
+    out_dir = os.path.join(OUT, args.split)
+    os.makedirs(out_dir, exist_ok=True)
+    df = data.load_df()
+    feats = data.get_features(df)
+    s = splits.get_split(args.split, df)
+    dev_idx, folds, te = s["dev"], s["folds"], s["test"]
     y = feats["labels"].astype(int)
     feature_sets = {
         "ECFP": feats["ecfp"],
@@ -52,7 +55,7 @@ def main():
     for fs_name, X in feature_sets.items():
         for m_name, make in models(args.n_jobs).items():
             name = f"{m_name}__{fs_name}"
-            path = os.path.join(OUT, name + ".npz")
+            path = os.path.join(out_dir, name + ".npz")
             if os.path.exists(path):
                 continue
             t0 = time.time()
@@ -64,7 +67,7 @@ def main():
                 oof[f_vl] = clf.predict_proba(X[dev_idx[f_vl]])[:, 1]
                 test_probs.append(clf.predict_proba(X[te])[:, 1])
             np.savez(path, oof=oof, oof_labels=y[dev_idx], test_probs=np.stack(test_probs),
-                     test_labels=y[te])
+                     test_labels=y[te], dev_idx=dev_idx, test_idx=te)
             from sklearn.metrics import roc_auc_score
             print(f"{name:<28} OOF AUC {roc_auc_score(y[dev_idx], oof):.4f} | "
                   f"test ens AUC {roc_auc_score(y[te], np.mean(test_probs, 0)):.4f} | {time.time()-t0:.0f}s",
