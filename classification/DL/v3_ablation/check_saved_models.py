@@ -21,8 +21,11 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import v3_core as C
-from v3_core import *  # noqa  (class names the pickles need live in __main__)
+import backbones
+import core
+import core as C          # dataset / collate / predict helpers
+import data
+import splits
 
 import __main__
 from notebook_classes import FineTunedBERTaECFP_v3, FocalLoss as _NBFocal  # noqa
@@ -32,10 +35,9 @@ from sklearn.metrics import (accuracy_score, balanced_accuracy_score, f1_score, 
                              average_precision_score, matthews_corrcoef, precision_score,
                              recall_score, confusion_matrix)
 from sklearn.preprocessing import StandardScaler
-from transformers import AutoTokenizer
 
-MODELS = os.path.join(os.path.dirname(C.HERE), "models")
-OUT = os.path.join(C.HERE, "results")
+MODELS = os.path.join(os.path.dirname(data.HERE), "models")
+OUT = os.path.join(data.HERE, "results")
 os.makedirs(OUT, exist_ok=True)
 DEV = torch.device("cuda")
 C.setup_torch()
@@ -51,27 +53,27 @@ def metrics(y, p, thr):
 
 
 def port_from_saved(nb_model):
-    """Build V3Ablatable with the notebook model's hyper-params and copy weights."""
-    hp = dict(C.BEST_PARAMS)
-    hp["num_heads"] = nb_model.cross_modal.layers[0].self_attn.num_heads
-    hp["n_cross_layers"] = len(nb_model.cross_modal.layers)
+    """Build core.V3 (tuned config) and copy the notebook model's weights into it."""
     lin = [m for m in nb_model.classifier if isinstance(m, torch.nn.Linear)]
-    hp["num_classifier_layers"] = len(lin) - 1
-    hp["hidden_dim"] = lin[0].out_features
-    cfg = C.RunCfg(hp=hp, n_pool_layers=nb_model.n_pool_layers)
-    m = C.build_model(cfg)
+    found = {"num_heads": nb_model.cross_modal.layers[0].self_attn.num_heads,
+             "n_cross_layers": len(nb_model.cross_modal.layers),
+             "num_classifier_layers": len(lin) - 1, "hidden_dim": lin[0].out_features}
+    tuned = core.HP_SETS["tuned"]
+    assert all(tuned[k] == v for k, v in found.items()), f"saved model is not the tuned config: {found}"
+    m = core.build_model(core.make_cfg("full"))
     missing, unexpected = m.load_state_dict(nb_model.state_dict(), strict=False)
     return m, missing, unexpected
 
 
 def main():
     t_start = time.time()
-    df = C.load_df()
-    feats = C.get_features(df)
-    tok = C.load_tokenizer()
-    C.register_remote_code()
-    tr, va, te = C.notebook_splits(df)
-    dev_idx, folds = C.notebook_folds(df, tr, va)
+    df = data.load_df()
+    feats = data.get_features(df)
+    tok = backbones.load_tokenizer("molformer")
+    backbones.register_remote_code()
+    s = splits.get_split("random", df)
+    tr, va, te = s["train"], s["val"], s["test"]
+    dev_idx, folds = s["dev"], s["folds"]
     collate_dyn = C.make_collate(tok.pad_token_id)
     collate_512 = C.make_collate(tok.pad_token_id, fixed_len=512)
     report = {}
@@ -84,8 +86,19 @@ def main():
     ds = C.V3Dataset(feats, te[:128], tok, sc)
     b_dyn, b_512 = collate_dyn([ds[i] for i in range(len(ds))]), collate_512([ds[i] for i in range(len(ds))])
 
+    # The port draws MoLFormer's random attention features on the CPU (speed patch) while the
+    # pickled notebook model draws them on the GPU, so give both the *same* fixed features and the
+    # same rotary tables (the pickle cached them in bf16) before comparing outputs.
+    for l_nb, l_po in zip(nb.bert.encoder.layer, port.bert.encoder.layer):
+        a_nb, a_po = l_nb.attention.self, l_po.attention.self
+        a_nb.feature_map.deterministic = a_po.feature_map.deterministic = True
+        a_po.feature_map.weight = a_nb.feature_map.weight.clone()
+        r_nb, r_po = a_nb.rotary_embeddings, a_po.rotary_embeddings
+        r_po.cos_cached, r_po.sin_cached = r_nb.cos_cached.clone(), r_nb.sin_cached.clone()
+        r_po.max_seq_len_cached = r_nb.max_seq_len_cached
+
     def logits(model, b):
-        torch.manual_seed(0)   # same random-feature draw for both
+        torch.manual_seed(0)
         with torch.no_grad():
             return model(**{k: v.to(DEV) for k, v in b.items() if k != "labels"}).float().cpu()
     l_nb512, l_port512, l_portdyn = logits(nb, b_512), logits(port, b_512), logits(port, b_dyn)
@@ -145,8 +158,8 @@ def main():
         "ROC-AUC": 0.9658, "AUPRC": 0.9897, "MCC": 0.7778, "Specificity": 0.8140}
 
     # OOF saved by the notebook -> recompute CV numbers & thresholds
-    oof_p = np.load(os.path.join(os.path.dirname(C.HERE), "oof_probs_full.npy"))
-    oof_y = np.load(os.path.join(os.path.dirname(C.HERE), "oof_lbls_full.npy"))
+    oof_p = np.load(os.path.join(os.path.dirname(data.HERE), "oof_probs_full.npy"))
+    oof_y = np.load(os.path.join(os.path.dirname(data.HERE), "oof_lbls_full.npy"))
     thrs = np.linspace(0.10, 0.90, 500)
     mcc = [matthews_corrcoef(oof_y, (oof_p > t).astype(int)) for t in thrs]
     report["oof_recheck"] = {"oof_auc": float(roc_auc_score(oof_y, oof_p)),

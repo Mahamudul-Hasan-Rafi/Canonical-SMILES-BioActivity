@@ -61,7 +61,8 @@ EXPERIMENTS = {
     "unbalanced": (cv_jobs(REPRO_SEEDS, variant="no_sampler")
                    + cv_jobs(REPRO_SEEDS, variant="vanilla")),
     "untuned": cv_jobs(REPRO_SEEDS, hp_set="untuned"),
-    "backbones": [j for b in NEW_BACKBONES for j in cv_jobs(REPRO_SEEDS, backbone=b)],
+    # 1 seed per backbone (user decision 2026-09-19, to save time); compare against MoLFormer seed 42
+    "backbones": [j for b in NEW_BACKBONES for j in cv_jobs([42], backbone=b)],
 }
 
 # order in which the queue runs the new experiments

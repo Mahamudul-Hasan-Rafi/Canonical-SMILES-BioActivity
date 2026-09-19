@@ -132,6 +132,9 @@ def main():
                 if int(b) in bi:
                     try:
                         img = Draw.DrawMorganBit(m, int(b), dict(bi), useSVG=False)
+                        if isinstance(img, (bytes, bytearray)):     # newer RDKit returns PNG bytes
+                            from PIL import Image
+                            img = Image.open(io.BytesIO(img))
                         break
                     except Exception:
                         continue

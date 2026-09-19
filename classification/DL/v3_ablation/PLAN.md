@@ -1,4 +1,8 @@
-# Draft plan: next experiments on V3 (for review — nothing started yet)
+# Plan: next experiments on V3
+
+> **Status 2026-09-19 21:15: completed.** Results in `results/REPORT.md`. Changes vs this plan, all at the
+> user's request: the target was confirmed as HDAC1 (ChEMBL CHEMBL325); ChemBERTa ran with 1 seed instead of 3;
+> the thermal cap was lifted to an emergency-only 88 °C for the last runs; the scaffold split is reported as supplementary.
 
 Status when drafted (19 Sep 2026, 04:40): reproduction finished (18 jobs); ablation running
 (28 of 93 jobs done, estimated finish around 12:00–13:00). Hyperparameter optimization is **not** re-run

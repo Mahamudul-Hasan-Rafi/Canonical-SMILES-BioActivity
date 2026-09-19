@@ -65,7 +65,7 @@ class Store:
             minutes += meta["train_seconds"] / 60
             ntr = meta["n_trainable"]
         r = M.evaluate_cv(oof, self.y[dev], fold_of, np.stack(test), test_y)
-        r.update(minutes=minutes, n_trainable=ntr)
+        r.update(minutes=minutes, n_trainable=ntr, oof=oof, oof_y=self.y[dev])
         self._cache[key] = r
         return r
 
@@ -149,34 +149,65 @@ def sec_ablation(st):
     full3 = seeds_runs(st)
     n_oof = np.std([r["cv"]["OOF AUC"] for r in full3], ddof=1) if len(full3) > 1 else np.nan
     n_test = np.std([r["test"]["ROC-AUC"] for r in full3], ddof=1) if len(full3) > 1 else np.nan
-    L.append(f"Training-seed noise of the full model (sd over {len(full3)} seeds): OOF AUC ±{n_oof:.4f}, "
-             f"test AUC ±{n_test:.4f}. ▲/▼ = OOF-AUC change larger than 2 sd of this seed noise (4,669 OOF "
-             f"predictions); * = also significant on the 825-molecule test set (DeLong p < 0.05). With only "
-             f"825 test molecules, DeLong cannot resolve differences below ~0.01 AUC.\n")
-    rows, csv = [], []
-    for v in ["full"] + E.ABLATION_ORDER:
-        r = st.cv(variant=v, seed=42)
+    res = {v: st.cv(variant=v, seed=42) for v in E.ABLATION_ORDER}
+    done = [v for v in E.ABLATION_ORDER if res[v] is not None]
+    # paired DeLong vs the full model: on the OOF predictions (4,669 dev molecules, every variant
+    # predicts every molecule from a model that never trained on it) and on the 825 test molecules
+    oof_d = {v: M.delong(ref["oof_y"], res[v]["oof"], ref["oof"]) for v in done}
+    te_d = {v: M.delong(ref["test_y"], res[v]["ens"], ref["ens"]) for v in done}
+    p_oof = dict(zip(done, M.holm([oof_d[v][1] for v in done]))) if done else {}
+    p_te = dict(zip(done, M.holm([te_d[v][1] for v in done]))) if done else {}
+    L.append(
+        f"Evidence columns: **▲/▼** = OOF-AUC change larger than 2 sd of the full model's training-seed noise "
+        f"(sd over {len(full3)} seeds: OOF AUC ±{n_oof:.4f}, test AUC ±{n_test:.4f}); **†** = paired DeLong "
+        f"on the 4,669 out-of-fold predictions significant after Holm correction over the {len(done)} variants "
+        f"(p < 0.05); **\*** = paired DeLong on the 825 held-out test molecules significant after Holm correction.\n")
+    L.append("Caveats: the held-out test set is the clean, headline evaluation. The OOF predictions are secondary "
+             "evidence: each validation fold was also used for early stopping (notebook protocol), so OOF scores are "
+             "slightly optimistic; the bias affects all variants alike, so paired comparisons remain informative. "
+             "DeLong covers test-molecule sampling only, not training randomness (hence the seed-noise column). "
+             "On 825 test molecules the SE of an AUC difference between these highly correlated variants is "
+             "~0.0016-0.0032, so differences below ~0.003-0.006 cannot be resolved there.\n")
+    rows = [["full", core.VARIANTS["full"][0], f4(ref["cv"]["OOF AUC"]), "—", "—", "—", f4(ref["test"]["ROC-AUC"]),
+             "—", "—", f4(ref["test"]["MCC"]), ""]]
+    csv = []
+    for v in E.ABLATION_ORDER:
+        r = res[v]
         if r is None:
-            rows.append([v, core.VARIANTS[v][0]] + ["—"] * 7)
+            rows.append([v, core.VARIANTS[v][0]] + ["—"] * 9)
             continue
-        d_oof = r["cv"]["OOF AUC"] - ref["cv"]["OOF AUC"]
-        d_te = r["test"]["ROC-AUC"] - ref["test"]["ROC-AUC"]
-        p = 1.0 if v == "full" else M.delong(r["test_y"], r["ens"], ref["ens"])[1]
-        flag = ""
-        if v != "full" and abs(d_oof) > 2 * n_oof:
-            flag = ("▲" if d_oof > 0 else "▼") + ("*" if p < 0.05 else "")
-        rows.append([v, core.VARIANTS[v][0], f4(r["cv"]["OOF AUC"]), f"{d_oof:+.4f}", f4(r["test"]["ROC-AUC"]),
-                     f"{d_te:+.4f}", f"{p:.3f}", f4(r["test"]["MCC"]), flag])
-        csv.append(dict(variant=v, oof_auc=r["cv"]["OOF AUC"], d_oof_auc=d_oof, test_auc=r["test"]["ROC-AUC"],
-                        d_test_auc=d_te, p_delong=p, test_mcc=r["test"]["MCC"], cv_mcc=r["cv"]["MCC"],
-                        gpu_minutes=r["minutes"], n_trainable=r["n_trainable"]))
-    L += table(["variant", "what changes", "OOF AUC", "Δ OOF", "test AUC", "Δ test", "p DeLong", "test MCC", ""], rows)
+        d_oof, p_oof_raw = oof_d[v]
+        d_te, p_te_raw = te_d[v]
+        se_oof = abs(d_oof) / max(stats_norm_isf(p_oof_raw / 2), 1e-12)
+        ev = ""
+        if abs(d_oof) > 2 * n_oof:
+            ev += "▲" if d_oof > 0 else "▼"
+        ev += ("†" if p_oof[v] < 0.05 else "") + ("\*" if p_te[v] < 0.05 else "")
+        rows.append([v, core.VARIANTS[v][0], f4(r["cv"]["OOF AUC"]), f"{d_oof:+.4f}", f"{se_oof:.4f}",
+                     fp(p_oof[v]), f4(r["test"]["ROC-AUC"]), f"{d_te:+.4f}", fp(p_te[v]), f4(r["test"]["MCC"]), ev])
+        csv.append(dict(variant=v, oof_auc=r["cv"]["OOF AUC"], d_oof_auc=d_oof, se_d_oof=se_oof,
+                        p_oof_delong=p_oof_raw, p_oof_delong_holm=p_oof[v], test_auc=r["test"]["ROC-AUC"],
+                        d_test_auc=d_te, p_test_delong=p_te_raw, p_test_delong_holm=p_te[v],
+                        test_mcc=r["test"]["MCC"], cv_mcc=r["cv"]["MCC"], gpu_minutes=r["minutes"],
+                        n_trainable=r["n_trainable"]))
+    L += table(["variant", "what changes", "OOF AUC", "Δ OOF", "SE Δ OOF", "p OOF DeLong (Holm)", "test AUC",
+                "Δ test", "p test DeLong (Holm)", "test MCC", "evidence"], rows)
     pd.DataFrame(csv).to_csv(os.path.join(RES, "ablation_table.csv"), index=False)
     return L
 
 
+def stats_norm_isf(q):
+    from scipy import stats
+    return stats.norm.isf(q)
+
+
+def fp(p):
+    return "<1e-4" if p < 1e-4 else f"{p:.4f}" if p < 0.001 else f"{p:.3f}"
+
+
 def sec_scaffold(st):
-    L = ["## 3. Random split vs scaffold split\n",
+    L = ["## 3. Supplementary: random split vs scaffold split\n",
+         "_Robustness check only; every other section uses the notebook's split._\n",
          "Scaffold split: Bemis-Murcko scaffolds; test = 735 molecules whose scaffolds never occur in training; "
          "5-fold CV grouped by scaffold on the rest.\n"]
     rows, csv = [], []
@@ -220,7 +251,30 @@ def sec_variants(st, title, entries, note=""):
                      ms([r["test05"]["Brier"] for r in rr]), ms([r["test05"]["ECE"] for r in rr])])
     L += table(["configuration", "seeds", "OOF AUC", "test AUC", "test MCC (opt thr)", "test BalAcc (opt thr)",
                 "Sens @0.5", "Spec @0.5", "Brier", "ECE"], rows)
+    L += paired_tests(st, entries)
     return L
+
+
+def paired_tests(st, entries):
+    """Paired DeLong of every entry vs the first (reference) entry, seed by seed (same seed =
+    same folds, same test molecules), on OOF and test predictions; Holm over all comparisons."""
+    ref_kw = entries[0][1]
+    comps = []
+    for label, kw in entries[1:]:
+        for s in SEEDS:
+            a, b = st.cv(seed=s, **kw), st.cv(seed=s, **ref_kw)
+            if a is None or b is None:
+                continue
+            comps.append((label, s, M.delong(b["oof_y"], a["oof"], b["oof"]), M.delong(b["test_y"], a["ens"], b["ens"])))
+    if not comps:
+        return []
+    h_oof = M.holm([c[2][1] for c in comps])
+    h_te = M.holm([c[3][1] for c in comps])
+    rows = [[lab, s, f"{o[0]:+.4f}", fp(ho), f"{t[0]:+.4f}", fp(ht)]
+            for (lab, s, o, t), ho, ht in zip(comps, h_oof, h_te)]
+    return [f"Paired DeLong vs **{entries[0][0]}** (same seed, same folds and test molecules; Holm-corrected "
+            f"over the {len(comps)} comparisons in this table):\n"] + table(
+        ["configuration", "seed", "Δ OOF AUC", "p OOF (Holm)", "Δ test AUC", "p test (Holm)"], rows)
 
 
 def sec_backbones(st):
@@ -235,7 +289,9 @@ def sec_backbones(st):
         if rr:
             rows.append([b, f"{rr[0]['n_trainable']/1e6:.1f}M", f"{np.mean([r['minutes'] for r in rr]):.0f}"])
     if rows:
-        L += table(["backbone", "trainable params (whole model)", "GPU-minutes per 5-fold run"], rows)
+        L += table(["backbone", "trainable params (whole model)", "wall-clock training minutes per 5-fold run*"], rows)
+        L.append("*Includes thermal pauses: the MoLFormer runs were trained under a 78 °C GPU cap that paused "
+                 "training ~40-50% of the time, the ChemBERTa runs without it, so the times are not directly comparable.\n")
     return L
 
 
@@ -251,6 +307,10 @@ def sec_explain():
                    [[k, f4(mo["mean_abs_phi"][k]), f"{mo['share_of_total'][k]*100:.0f}%", f4(mo["occlusion_auc"][k]),
                      f"{mo['mean_gate'][k]:.3f}"] for k in mo["mean_abs_phi"]])
         L.append(f"Test AUC with all modalities: {mo['full_auc']:.4f}\n")
+        L.append("The mean gate is ~0.500 for every modality by construction: V3's gate is "
+                 "sigmoid(LayerNorm(W·x)), and LayerNorm centres each token to mean 0 before the sigmoid. The gate "
+                 "can therefore only re-weight dimensions within a modality, never scale a whole modality up or "
+                 "down, which is consistent with the no_gate ablation showing no benefit.\n")
     for key, label in [("v3_vs_xgboost", "V3 vs XGBoost TreeSHAP"), ("lime", "LIME"), ("deletion_aopc", "Deletion test (area, lower = more faithful)"),
                        ("regions", "Hydroxamate ZBG / linker / cap")]:
         if key in s:
@@ -278,6 +338,13 @@ def main():
                       "Untuned = 8 heads, hidden 512, dropout 0.2, 3 classifier + 3 cross-modal layers, lr 5e-6, wd 1e-4.")
     L += sec_backbones(st)
     L += sec_explain()
+    L += ["## 8. Other result files\n",
+          "- [descriptor_stats.md](descriptor_stats.md): statistical tests of the 6 descriptors vs activity "
+          "(Mann-Whitney, Welch/Student t, z, scaffold-clustered logistic regression)",
+          "- [metrics_all.md](metrics_all.md): accuracy / balanced accuracy / precision / recall / F1 of every experiment",
+          "- [saved_model_check.json](saved_model_check.json): re-scoring of the notebook's saved models",
+          "- [data_checks.json](data_checks.json): duplicates with conflicting labels, test-vs-train similarity",
+          "- `ablation_table.csv`, `scaffold_table.csv`, `metrics_all.csv`, `descriptor_stats.csv`: numbers behind the tables\n"]
     with open(os.path.join(RES, "REPORT.md"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(L))
     print("\n".join(L))

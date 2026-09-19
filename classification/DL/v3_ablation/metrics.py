@@ -90,6 +90,17 @@ def delong(y, p1, p2):
     return float(aucs[0] - aucs[1]), float(2 * stats.norm.sf(abs(z)))
 
 
+def holm(p):
+    """Holm-Bonferroni adjusted p-values (family-wise error control)."""
+    p = np.asarray(p, dtype=float)
+    adj = np.empty_like(p)
+    running = 0.0
+    for rank, i in enumerate(np.argsort(p)):
+        running = max(running, (len(p) - rank) * p[i])
+        adj[i] = min(1.0, running)
+    return adj
+
+
 def mean_sd(vals):
     vals = [v for v in vals if v is not None and not np.isnan(v)]
     if not vals:

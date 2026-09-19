@@ -1,4 +1,7 @@
 """
+FROZEN LEGACY IMPLEMENTATION - do not edit. It produced the reproduction and ablation
+results and is kept only as the reference for tests/test_core_parity.py; use core.py.
+
 Core of the V3 reproduction + ablation study.
 
 This is a faithful port of `bioactivity_dl 8_2_C_v3_re.ipynb` (dataset, V3 model,

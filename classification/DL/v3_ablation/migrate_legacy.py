@@ -20,7 +20,7 @@ import experiments as E
 import splits
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LEGACY = os.path.join(HERE, "results", "jobs")
+LEGACY = os.path.join(HERE, "results", "archive", "legacy_jobs")
 STORE = os.path.join(HERE, "results", "store")
 
 

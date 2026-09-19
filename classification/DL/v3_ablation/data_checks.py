@@ -13,7 +13,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import v3_core as C
+import data
+import splits
 
 
 def main():
@@ -21,8 +22,9 @@ def main():
     from rdkit.Chem import rdFingerprintGenerator
     from rdkit.Chem.Scaffolds import MurckoScaffold
 
-    df = C.load_df()
-    tr, va, te = C.notebook_splits(df)
+    df = data.load_df()
+    s = splits.get_split("random", df)
+    tr, va, te = s["train"], s["val"], s["test"]
     split = np.empty(len(df), dtype=object)
     split[tr], split[va], split[te] = "train", "val", "test"
     smi = df["canonical_smiles"].tolist()
@@ -53,9 +55,9 @@ def main():
         "frac_eq_1.0": float((maxsim >= 0.999).mean()), "frac_lt_0.4": float((maxsim < 0.4).mean())}
     rep["test_scaffold_seen_in_trainval"] = float(np.mean([scaf[i] in dev_scaf for i in te]))
     rep["n_unique_scaffolds"] = len(set(scaf))
-    np.save(os.path.join(C.HERE, "results", "test_maxsim.npy"), maxsim)
+    np.save(os.path.join(data.HERE, "results", "test_maxsim.npy"), maxsim)
 
-    out = os.path.join(C.HERE, "results", "data_checks.json")
+    out = os.path.join(data.HERE, "results", "data_checks.json")
     with open(out, "w") as fh:
         json.dump(rep, fh, indent=2)
     print(json.dumps({k: v for k, v in rep.items() if k != "duplicates"}, indent=2))
