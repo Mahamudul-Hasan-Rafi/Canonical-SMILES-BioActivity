@@ -19,7 +19,7 @@ import core
 import experiments as E
 import report as R
 
-KEYS = ["Accuracy", "Balanced Acc", "Precision", "Sensitivity", "F1"]
+KEYS = ["Accuracy", "Balanced Acc", "Precision", "Sensitivity", "F1", "ROC-AUC", "MCC"]
 NAMES = {"Sensitivity": "Recall"}
 
 
@@ -53,14 +53,25 @@ def main():
     add("Tuning", "Untuned (notebook fallback config)", dict(hp_set="untuned"), E.REPRO_SEEDS)
     for b in E.NEW_BACKBONES:
         add("Backbone (seed 42)", f"{b}", dict(backbone=b), [42])
+    for name in ["RF__ECFP", "XGBoost__ECFP", "RF__ECFP+MACCS+Desc", "XGBoost__ECFP+MACCS+Desc",
+                 "LogReg__ECFP+MACCS+Desc"]:
+        r = st.baseline("random", name)
+        if r is None:
+            continue
+        for proto in ("test", "cv"):
+            row = {"group": "Classical baseline", "experiment": name.replace("__", " on "), "protocol": proto, "seeds": 1}
+            for k in KEYS:
+                row[NAMES.get(k, k)] = r[proto][k]
+                row[NAMES.get(k, k) + " sd"] = np.nan
+            rows.append(row)
 
     t = pd.DataFrame(rows)
     t.to_csv(os.path.join(R.RES, "metrics_all.csv"), index=False)
-    cols = ["Accuracy", "Balanced Acc", "Precision", "Recall", "F1"]
+    cols = ["Accuracy", "Balanced Acc", "Precision", "Recall", "F1", "ROC-AUC", "MCC"]
 
     def cell(r, c):
         return f"{r[c]:.4f}" if np.isnan(r[c + ' sd']) else f"{r[c]:.4f} ± {r[c + ' sd']:.4f}"
-    L = ["# Accuracy, balanced accuracy, precision, recall, F1 - all finished experiments (notebook split)\n"]
+    L = ["# Final metrics - all experiments on the notebook split\n"]
     for proto, title in (("test", "Held-out test set (825 molecules): 5-model ensemble, OOF MCC-optimal threshold"),
                          ("cv", "5-fold cross-validation (out-of-fold, mean over folds, OOF max-F1 threshold)")):
         L += [f"## {title}\n", "| group | experiment | seeds | " + " | ".join(cols) + " |", "|" + "---|" * (3 + len(cols))]
