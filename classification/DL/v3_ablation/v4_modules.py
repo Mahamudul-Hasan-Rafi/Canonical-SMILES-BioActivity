@@ -149,3 +149,24 @@ class DMPNN(nn.Module):
         out = torch.zeros(n_graphs, self.hidden, device=g_x.device, dtype=a.dtype).index_add_(0, g_batch, a)
         cnt = torch.zeros(n_graphs, device=g_x.device).index_add_(0, g_batch, torch.ones_like(g_batch, dtype=torch.float))
         return out / cnt.clamp(min=1).unsqueeze(1).to(out.dtype)
+
+
+SIM_CACHE = os.path.join(data.HERE, "cache", "tanimoto_ecfp4_2048c.npy")
+
+
+def get_sim_matrix(smiles):
+    """All-pairs Tanimoto similarity (Morgan r2, 2048 bits, chirality) as float16 [N, N], cached.
+    V6 retrieval only ever reads the columns of the current training fold."""
+    if os.path.exists(SIM_CACHE):
+        S = np.load(SIM_CACHE, mmap_mode="r")
+        if S.shape[0] == len(smiles):
+            return S
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import rdFingerprintGenerator
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=FP2_BITS, includeChirality=True)
+    fps = [gen.GetFingerprint(Chem.MolFromSmiles(s)) for s in smiles]
+    S = np.zeros((len(fps), len(fps)), np.float16)
+    for i, f in enumerate(fps):
+        S[i] = DataStructs.BulkTanimotoSimilarity(f, fps)
+    np.save(SIM_CACHE, S)
+    return np.load(SIM_CACHE, mmap_mode="r")

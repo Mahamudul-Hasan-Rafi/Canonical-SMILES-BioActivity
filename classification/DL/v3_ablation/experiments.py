@@ -74,6 +74,10 @@ EXPERIMENTS["v4"] = (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm")
 V5_VARIANTS = ["graph_mt", "graph_reg"]
 EXPERIMENTS["pic50"] = [j for v in V5_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
 
+# V6: neighbour-anchored reasoning targeting activity cliffs / imprecise potency (hard-case research)
+V6_VARIANTS = ["graph_mt_knn", "graph_mt_delta"]
+EXPERIMENTS["hard"] = [j for v in V6_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
+
 # order in which the queue runs the new experiments
 QUEUE = ["scaffold", "unbalanced", "untuned", "backbones"]
 

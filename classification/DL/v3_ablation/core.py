@@ -32,7 +32,7 @@ D = 768
 MODALITIES = ("smiles", "ecfp", "maccs", "desc")
 MODALITIES_ALL = MODALITIES + ("graph",)       # "graph" only with the V4-C D-MPNN branch
 # V4 parameters trained with base_lr * new_lr_mult (modules with no V3 counterpart)
-NEW_PREFIXES = ("graph_enc.", "graph_proj.", "tok_", "fp_emb.", "fp_cnt.")
+NEW_PREFIXES = ("graph_enc.", "graph_proj.", "tok_", "fp_emb.", "fp_cnt.", "nbr_")
 
 HP_SETS = {
     # optuna_results_v3__.json (the notebook's tuned V3)
@@ -61,13 +61,14 @@ def random_smiles(smi):
 
 class V3Dataset(torch.utils.data.Dataset):
     def __init__(self, feats, idx, tokenizer, scaler, augment=False, max_len=512, fp_key="ecfp", graphs=False,
-                 pic50=False):
+                 pic50=False, nbrs=None):
         self.tok = tokenizer
         self.smiles = [feats["smiles"][i] for i in idx]
         self.labels = feats["labels"][idx].astype(np.float32)
         self.ecfp = feats[fp_key][idx].astype(np.float32)
         self.graphs = [feats["graphs"][i] for i in idx] if graphs else None
         self.pic50 = feats["pic50"][idx].astype(np.float32) if pic50 else None
+        self.nbrs = nbrs                       # V6: (neighbour global indices [n, k], similarities [n, k])
         self.maccs = feats["maccs"][idx].astype(np.float32)
         self.desc = scaler.transform(feats["desc_raw"][idx]).astype(np.float32)
         self.augment, self.max_len = augment, max_len
@@ -86,10 +87,12 @@ class V3Dataset(torch.utils.data.Dataset):
         item = (ids, self.ecfp[i], self.maccs[i], self.desc[i], self.labels[i])
         if self.graphs is not None:
             item = item + (self.graphs[i],)
+        if self.nbrs is not None:
+            item = item + ((self.nbrs[0][i], self.nbrs[1][i]),)
         return item + (self.pic50[i],) if self.pic50 is not None else item
 
 
-def make_collate(pad_id, fixed_len=None, fp_tokens=False, graphs=False, pic50=False):
+def make_collate(pad_id, fixed_len=None, fp_tokens=False, graphs=False, pic50=False, nbr_feats=None):
     def collate(batch):
         L = fixed_len or max(len(b[0]) for b in batch)
         ids = torch.full((len(batch), L), pad_id, dtype=torch.long)
@@ -110,6 +113,13 @@ def make_collate(pad_id, fixed_len=None, fp_tokens=False, graphs=False, pic50=Fa
         if graphs:        # V4-C: molecular graphs for the D-MPNN branch
             import v4_modules
             out.update(v4_modules.collate_graphs([b[5] for b in batch]))
+        if nbr_feats is not None:   # V6: retrieved training analogues (fingerprint, potency, label, similarity)
+            pos = 6 if graphs else 5
+            gi = np.stack([b[pos][0] for b in batch])
+            out["nb_fp"] = torch.from_numpy(nbr_feats["fp"][gi].astype(np.float32))
+            out["nb_pic"] = torch.from_numpy(nbr_feats["pic"][gi].astype(np.float32))
+            out["nb_lab"] = torch.from_numpy(nbr_feats["lab"][gi].astype(np.float32))
+            out["nb_sim"] = torch.from_numpy(np.stack([b[pos][1] for b in batch]).astype(np.float32))
         if pic50:         # V5: measured potency as an auxiliary / regression target (always last)
             out["pic50"] = torch.tensor(np.array([b[-1] for b in batch]), dtype=torch.float)
         return out
@@ -201,7 +211,8 @@ class V3(nn.Module):
                  use_gate=True, pooling="triple", n_pool_layers=4, freeze_bottom_n=None,
                  freeze_all_bert=False, num_heads=8, dropout=0.2, hidden_dim=512,
                  num_classifier_layers=4, n_cross_layers=3, fast_molformer=True,
-                 ecfp_dim=ECFP_BITS, fp_dropout=0.0, graph=False, token_dim=256, reg_head=False, task="cls"):
+                 ecfp_dim=ECFP_BITS, fp_dropout=0.0, graph=False, token_dim=256, reg_head=False, task="cls",
+                 retrieval=0):
         super().__init__()
         self.backbone = backbone
         self.modalities = tuple(m for m in MODALITIES if m in modalities) + (("graph",) if graph else ())
@@ -290,6 +301,15 @@ class V3(nn.Module):
             self.reg_head = nn.Sequential(nn.Linear(D, 256), nn.GELU(), nn.Dropout(dropout), nn.Linear(256, 1))
             self.register_buffer("pic_mu", torch.tensor(0.0))
             self.register_buffer("pic_sd", torch.tensor(1.0))
+        if retrieval:                     # V6: neighbour-anchored delta module
+            H = 256
+            self.nbr_diff = nn.Sequential(nn.Linear(ecfp_dim, H), nn.GELU(), nn.Dropout(dropout), nn.Linear(H, H))
+            self.nbr_feat = nn.Linear(3, H)          # similarity, neighbour potency (z), neighbour label
+            self.nbr_q = nn.Linear(D, H)
+            self.nbr_norm = nn.LayerNorm(H)
+            self.nbr_delta = nn.Linear(H, 1)          # predicted potency change query - neighbour (z units)
+            self.nbr_attn = nn.Linear(H, 1)
+            self.nbr_out = nn.Linear(H + 1, D)
 
     def train(self, mode=True):
         super().train(mode)
@@ -340,7 +360,21 @@ class V3(nn.Module):
                 embs.append(self.desc_proj(descriptors))
         return torch.stack(embs, dim=1)
 
-    def fuse(self, tokens):
+    def neighbour_update(self, fused, q_fp, nb_fp, nb_pic, nb_lab, nb_sim):
+        """Matched-pair reasoning over k retrieved training analogues: each analogue j gives an anchored
+        potency estimate  z_j + delta_j  where delta_j is predicted from the fingerprint difference and the
+        query context; attention pools the analogues; the result is added to the fused representation."""
+        diff = q_fp.unsqueeze(1).to(nb_fp.dtype) - nb_fp
+        zp = (nb_pic - self.pic_mu) / self.pic_sd
+        h = self.nbr_norm(F.gelu(self.nbr_diff(diff) + self.nbr_feat(torch.stack([nb_sim, zp, nb_lab], -1))
+                                 + self.nbr_q(fused).unsqueeze(1)))
+        anch = zp + self.nbr_delta(h).squeeze(-1).float()
+        a = torch.softmax(self.nbr_attn(h).squeeze(-1).float(), dim=1)
+        ctx = (a.unsqueeze(-1) * h.float()).sum(1)
+        pooled = (a * anch).sum(1, keepdim=True)
+        return fused + self.nbr_out(torch.cat([ctx, pooled], -1).to(fused.dtype)), anch
+
+    def fuse(self, tokens, nbr=None):
         """modality tokens [B, n_mod, D] -> logit [B]"""
         B = tokens.size(0)
         if self.fusion == "xattn":
@@ -352,13 +386,18 @@ class V3(nn.Module):
         if self.use_gate:
             tokens = self.gate(tokens) * tokens
         fused = self.fusion_proj(tokens.reshape(B, -1))
+        anch = None
+        if nbr is not None and hasattr(self, "nbr_diff"):
+            fused, anch = self.neighbour_update(fused, **nbr)
         logit = self.classifier(fused).squeeze(-1)
         if not hasattr(self, "reg_head"):
             return logit
         z = self.reg_head(fused).squeeze(-1)                 # standardised pIC50
         if self.task == "reg":        # score = predicted pIC50 relative to the class gap (5-6), 2 logits / log unit
             logit = 2.0 * (z.float() * self.pic_sd + self.pic_mu - 5.5)
-        return (logit, z) if self._want_reg else logit
+        if not self._want_reg:
+            return logit
+        return (logit, z) if anch is None else (logit, z, anch)
 
     def token_forward(self, input_ids, attention_mask, ecfp, maccs, descriptors, fp_ids, fp_cnt, fp_mask):
         """V4-B: one Transformer over [CLS] + SMILES tokens + substructure tokens + MACCS + descriptors."""
@@ -385,7 +424,12 @@ class V3(nn.Module):
             return self.token_forward(input_ids, attention_mask, ecfp, maccs, descriptors,
                                       extra["fp_ids"], extra["fp_cnt"], extra["fp_mask"])
         gb = {k: v for k, v in extra.items() if k.startswith("g_")} or None
-        return self.fuse(self.modality_tokens(input_ids, attention_mask, ecfp, maccs, descriptors, graph_batch=gb))
+        nbr = None
+        if "nb_fp" in extra:
+            nbr = {"q_fp": ecfp, "nb_fp": extra["nb_fp"], "nb_pic": extra["nb_pic"], "nb_lab": extra["nb_lab"],
+                   "nb_sim": extra["nb_sim"]}
+        return self.fuse(self.modality_tokens(input_ids, attention_mask, ecfp, maccs, descriptors, graph_batch=gb),
+                         nbr=nbr)
 
 
 def build_llrd_optimizer(model, base_lr, weight_decay, decay_factor=0.95, new_lr_mult=1.0):
@@ -458,6 +502,8 @@ class RunCfg:
     new_lr_mult: float = 1.0
     aux_pic50: float = 0.0                  # V5: weight of the auxiliary pIC50 regression loss
     task: str = "cls"                       # V5: cls | reg (classify by predicted pIC50)
+    retrieval: int = 0                      # V6: number of retrieved training analogues (0 = off)
+    delta_w: float = 0.0                    # V6: weight of the anchored-delta potency loss
 
     @property
     def hp(self):
@@ -474,7 +520,7 @@ class RunCfg:
 
 
 V4_DEFAULTS = {"fp_kind": "ecfp1024", "fp_dropout": 0.0, "graph": False, "new_lr_mult": 1.0,
-               "aux_pic50": 0.0, "task": "cls"}
+               "aux_pic50": 0.0, "task": "cls", "retrieval": 0, "delta_w": 0.0}
 _V4A = {"fp_kind": "ecfp2048c", "fp_dropout": 0.1}
 
 
@@ -510,6 +556,11 @@ VARIANTS = {
                         dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1)),
     "graph_reg":       ("V5-REG: V4-C trained to regress pIC50; active if predicted pIC50 is high",
                         dict(_V4A, graph=True, new_lr_mult=10.0, task="reg")),
+    # ── V6: neighbour-anchored reasoning over retrieved training analogues (training fold only) ──
+    "graph_mt_knn":    ("V6-K: V5-MT + context from 5 retrieved training analogues (no delta loss)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, retrieval=5)),
+    "graph_mt_delta":  ("V6-R: V6-K + anchored-delta potency loss (analogue potency + learned change)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, retrieval=5, delta_w=0.1)),
 }
 
 
@@ -530,7 +581,8 @@ def build_model(cfg: RunCfg):
               hidden_dim=hp["hidden_dim"], num_classifier_layers=hp["num_classifier_layers"],
               n_cross_layers=hp["n_cross_layers"], fast_molformer=cfg.fast_molformer,
               ecfp_dim=2048 if cfg.fp_kind == "ecfp2048c" else ECFP_BITS, fp_dropout=cfg.fp_dropout,
-              graph=cfg.graph, reg_head=cfg.aux_pic50 > 0 or cfg.task == "reg", task=cfg.task)
+              graph=cfg.graph, reg_head=cfg.aux_pic50 > 0 or cfg.task == "reg" or cfg.retrieval > 0, task=cfg.task,
+              retrieval=cfg.retrieval)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -591,15 +643,28 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
         feats = dict(feats, **v4_modules.get_v4_features(feats["smiles"]))
         dkw = {"fp_key": "ecfp2048c" if cfg.fp_kind == "ecfp2048c" else "ecfp", "graphs": cfg.graph}
         ckw = {"fp_tokens": cfg.fusion == "token", "graphs": cfg.graph}
-    use_reg = cfg.aux_pic50 > 0 or cfg.task == "reg"
+    use_reg = cfg.aux_pic50 > 0 or cfg.task == "reg" or cfg.retrieval > 0
     if use_reg:                                          # V5: measured potency, training molecules only
         import data as _data
         feats = dict(feats, pic50=_data.get_pic50(feats["smiles"]))
         dkw = dict(dkw, pic50=True)
         ckw = dict(ckw, pic50=True)
-    tr_ds = V3Dataset(feats, tr_idx, tokenizer, scaler, augment=augment_ok, **dkw)
-    vl_ds = V3Dataset(feats, vl_idx, tokenizer, scaler, **dkw)
-    ev_ds = {k: V3Dataset(feats, idx, tokenizer, scaler, **dkw) for k, idx in eval_sets.items()}
+    nbr_of = lambda idx: None
+    if cfg.retrieval:                                    # V6: analogues retrieved from the TRAINING fold only
+        import v4_modules
+        S = v4_modules.get_sim_matrix(feats["smiles"])
+        tr_arr = np.asarray(tr_idx)
+
+        def nbr_of(idx):
+            sub = S[np.ix_(np.asarray(idx), tr_arr)].astype(np.float32)
+            same = np.asarray(idx)[:, None] == tr_arr[None, :]
+            sub[same] = -1.0                              # never retrieve the molecule itself
+            top = np.argsort(-sub, axis=1)[:, :cfg.retrieval]
+            return tr_arr[top], np.take_along_axis(sub, top, 1)
+        ckw = dict(ckw, nbr_feats={"fp": feats["ecfp2048c"], "pic": feats["pic50"], "lab": feats["labels"]})
+    tr_ds = V3Dataset(feats, tr_idx, tokenizer, scaler, augment=augment_ok, nbrs=nbr_of(tr_idx), **dkw)
+    vl_ds = V3Dataset(feats, vl_idx, tokenizer, scaler, nbrs=nbr_of(vl_idx), **dkw)
+    ev_ds = {k: V3Dataset(feats, idx, tokenizer, scaler, nbrs=nbr_of(idx), **dkw) for k, idx in eval_sets.items()}
     collate = make_collate(tokenizer.pad_token_id, **ckw)
 
     if cfg.sampler:
@@ -643,10 +708,13 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 inputs = {k: v.to(device, non_blocking=True) for k, v in b.items() if k not in ("labels", "pic50")}
                 if use_reg:
-                    lg, zr = model(**inputs, return_reg=True)
+                    out = model(**inputs, return_reg=True)
+                    lg, zr = out[0], out[1]
                     zt = (b["pic50"].to(device) - model.pic_mu) / model.pic_sd
                     reg = F.smooth_l1_loss(zr.float(), zt)
                     loss = (reg if cfg.task == "reg" else crit(lg.float(), b["labels"].to(device)) + cfg.aux_pic50 * reg)
+                    if cfg.delta_w and len(out) > 2:        # V6-R: every analogue must predict our potency
+                        loss = loss + cfg.delta_w * F.smooth_l1_loss(out[2], zt.unsqueeze(1).expand_as(out[2]))
                     loss = loss / cfg.grad_accum
                 else:
                     lg = model(**inputs)
