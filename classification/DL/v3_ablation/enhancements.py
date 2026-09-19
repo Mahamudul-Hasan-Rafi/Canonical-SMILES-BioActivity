@@ -69,6 +69,12 @@ def main():
               ("V4-D: 0.5 x V4-C ensemble + 0.5 x XGBoost(ECFPc2048)", 0.5 * c_oof + 0.5 * x2o, 0.5 * c_te + 0.5 * x2t),
               ("V4-D': 0.5 x (V4-A+V4-C) ensemble + 0.5 x XGBoost(ECFPc2048)",
                0.25 * (a_oof + c_oof) + 0.5 * x2o, 0.25 * (a_te + c_te) + 0.5 * x2t)]
+    m_oof, m_te = seed_ens(backbone="chemberta_mlm", variant="graph_mt")
+    r_oof, r_te = seed_ens(backbone="chemberta_mlm", variant="graph_reg")
+    if m_oof is not None:
+        v4 += [("V5-MT seed ensemble (15 models)", m_oof, m_te),
+               ("V5-REG seed ensemble (15 models)", r_oof, r_te),
+               ("V5-D: 0.5 x V5-MT ensemble + 0.5 x XGBoost(ECFPc2048)", 0.5 * m_oof + 0.5 * x2o, 0.5 * m_te + 0.5 * x2t)]
     cands = [("V3, single seed (42), 5 models", runs[0]["oof"], runs[0]["ens"]),
              ("V3 seed ensemble (3 seeds x 5 folds = 15 models)", seed_oof, seed_te),
              ("XGBoost on ECFP+MACCS+Desc", xo, xt),
