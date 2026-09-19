@@ -321,6 +321,20 @@ def sec_v5(st):
     return L
 
 
+def sec_v6(st):
+    L = ["## 6d. V6: neighbour-anchored reasoning for the hard cases (activity cliffs, imprecise potency)\n",
+         "Motivated by hard_cases.py (OOF only): on activity-cliff errors the model copied its nearest "
+         "neighbour's label 100 % of the time, and near-cut-off errors track a potency error of ~0.6-0.7 log units. "
+         "V6 retrieves the 5 most similar TRAINING-fold molecules (never itself; tests/test_v6_retrieval.py) and "
+         "reasons over their measured potency, label, similarity and fingerprint difference (V6-K); V6-R adds an "
+         "anchored-delta loss (analogue potency + learned change = own potency). Per-category results: "
+         "[hard_case_compare.md](hard_case_compare.md).\n"]
+    ref = ("V5-MT (reference)", dict(backbone="chemberta_mlm", variant="graph_mt"))
+    v6 = [(core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v)) for v in E.V6_VARIANTS]
+    L += sec_variants(st, "", [ref] + v6)[1:]
+    return L
+
+
 def sec_explain():
     p = os.path.join(RES, "explain", "explain_summary.json")
     L = ["## 7. Explainability (published 5-fold ensemble)\n"]
@@ -365,6 +379,7 @@ def main():
     L += sec_backbones(st)
     L += sec_v4(st)
     L += sec_v5(st)
+    L += sec_v6(st)
     L += sec_explain()
     L += ["## 8. Other result files\n",
           "- [descriptor_stats.md](descriptor_stats.md): statistical tests of the 6 descriptors vs activity "
