@@ -77,6 +77,28 @@ def main():
                   f"test ens AUC {roc_auc_score(y[te], np.mean(test_probs, 0)):.4f} | {time.time()-t0:.0f}s",
                   flush=True)
 
+    # V5 counterpart: XGBoost regressing pIC50 (training folds only); score = sigmoid(2 * (pIC50_hat - 5.5))
+    from xgboost import XGBRegressor
+    pic = data.get_pic50(feats["smiles"])
+    X = feature_sets["ECFPc2048+MACCS+Desc"]
+    name = "XGBoostReg__ECFPc2048+MACCS+Desc"
+    path = os.path.join(out_dir, name + ".npz")
+    if not os.path.exists(path):
+        t0 = time.time()
+        oof = np.zeros(len(dev_idx), np.float32)
+        test_probs = []
+        sig = lambda p: 1 / (1 + np.exp(-2 * (p - 5.5)))
+        for f_tr, f_vl in folds:
+            reg = XGBRegressor(n_estimators=600, max_depth=6, learning_rate=0.05, subsample=0.8, colsample_bytree=0.5,
+                               n_jobs=args.n_jobs, random_state=42, tree_method="hist").fit(X[dev_idx[f_tr]], pic[dev_idx[f_tr]])
+            oof[f_vl] = sig(reg.predict(X[dev_idx[f_vl]]))
+            test_probs.append(sig(reg.predict(X[te])))
+        np.savez(path, oof=oof, oof_labels=y[dev_idx], test_probs=np.stack(test_probs), test_labels=y[te],
+                 dev_idx=dev_idx, test_idx=te)
+        from sklearn.metrics import roc_auc_score
+        print(f"{name:<28} OOF AUC {roc_auc_score(y[dev_idx], oof):.4f} | "
+              f"test ens AUC {roc_auc_score(y[te], np.mean(test_probs, 0)):.4f} | {time.time()-t0:.0f}s", flush=True)
+
 
 if __name__ == "__main__":
     main()

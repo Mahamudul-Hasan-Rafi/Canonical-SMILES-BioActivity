@@ -70,6 +70,10 @@ V4_VARIANTS = ["fp_upgrade", "token_fusion", "graph_branch"]
 EXPERIMENTS["v4"] = (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm")
                      + [j for v in V4_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)])
 
+# V5: potency-aware training on the best V4 model (V4-C), 3 seeds each
+V5_VARIANTS = ["graph_mt", "graph_reg"]
+EXPERIMENTS["pic50"] = [j for v in V5_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
+
 # order in which the queue runs the new experiments
 QUEUE = ["scaffold", "unbalanced", "untuned", "backbones"]
 

@@ -60,3 +60,22 @@ def get_features(df=None):
     os.makedirs(os.path.dirname(CACHE_NPZ), exist_ok=True)
     np.savez_compressed(CACHE_NPZ, **feats)
     return feats
+
+
+RAW_XLSX = r"E:\ML\BioActivity\Dataset\bioactivity_dataset.xlsx"
+
+
+def get_pic50(smiles):
+    """Median measured pIC50 per molecule from the raw ChEMBL export (for training targets only)."""
+    cache = os.path.join(HERE, "cache", "pic50.npy")
+    if os.path.exists(cache):
+        arr = np.load(cache)
+        if len(arr) == len(smiles):
+            return arr
+    raw = pd.read_excel(RAW_XLSX)
+    raw = raw[np.isfinite(raw["pIC50"])]
+    med = raw.groupby("canonical_smiles")["pIC50"].median()
+    arr = pd.Series(list(smiles)).map(med).values.astype(np.float32)
+    assert not np.isnan(arr).any(), "molecule without a raw pIC50"
+    np.save(cache, arr)
+    return arr

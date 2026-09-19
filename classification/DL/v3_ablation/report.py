@@ -310,6 +310,17 @@ def sec_v4(st):
     return L
 
 
+def sec_v5(st):
+    L = ["## 6c. V5: potency-aware training (pIC50 of training molecules only; test labels unchanged)\n",
+         "V5-MT = V4-C + an auxiliary head regressing the (standardised) median pIC50, loss = focal + 0.1 x "
+         "Huber (0.1 matches the two losses' scales; not tuned). V5-REG = V4-C trained only to regress pIC50; "
+         "its score is 2 x (predicted pIC50 - 5.5), thresholded like every other model (OOF MCC-optimal).\n"]
+    ref = ("V4-C (reference)", dict(backbone="chemberta_mlm", variant="graph_branch"))
+    v5 = [(core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v)) for v in E.V5_VARIANTS]
+    L += sec_variants(st, "", [ref] + v5)[1:]
+    return L
+
+
 def sec_explain():
     p = os.path.join(RES, "explain", "explain_summary.json")
     L = ["## 7. Explainability (published 5-fold ensemble)\n"]
@@ -353,6 +364,7 @@ def main():
                       "Untuned = 8 heads, hidden 512, dropout 0.2, 3 classifier + 3 cross-modal layers, lr 5e-6, wd 1e-4.")
     L += sec_backbones(st)
     L += sec_v4(st)
+    L += sec_v5(st)
     L += sec_explain()
     L += ["## 8. Other result files\n",
           "- [descriptor_stats.md](descriptor_stats.md): statistical tests of the 6 descriptors vs activity "
