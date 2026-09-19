@@ -53,8 +53,11 @@ def main():
     add("Tuning", "Untuned (notebook fallback config)", dict(hp_set="untuned"), E.REPRO_SEEDS)
     for b in E.NEW_BACKBONES:
         add("Backbone (seed 42)", f"{b}", dict(backbone=b), [42])
+    add("V4 (ChemBERTa-MLM)", "V3 with ChemBERTa-77M-MLM (V4 baseline)", dict(backbone="chemberta_mlm"), E.REPRO_SEEDS)
+    for v in E.V4_VARIANTS:
+        add("V4 (ChemBERTa-MLM)", core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v), E.REPRO_SEEDS)
     for name in ["RF__ECFP", "XGBoost__ECFP", "RF__ECFP+MACCS+Desc", "XGBoost__ECFP+MACCS+Desc",
-                 "LogReg__ECFP+MACCS+Desc"]:
+                 "LogReg__ECFP+MACCS+Desc", "RF__ECFPc2048+MACCS+Desc", "XGBoost__ECFPc2048+MACCS+Desc"]:
         r = st.baseline("random", name)
         if r is None:
             continue

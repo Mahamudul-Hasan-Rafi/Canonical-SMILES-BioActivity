@@ -295,6 +295,21 @@ def sec_backbones(st):
     return L
 
 
+def sec_v4(st):
+    L = ["## 6b. V4: architectural changes (ChemBERTa-77M-MLM backbone, 3 seeds)\n",
+         "V4-A = count-based Morgan r2 2048 bits + chirality + fingerprint dropout. V4-B = V4-A + substructure "
+         "tokens (non-zero fingerprint bits) fused with SMILES tokens in one Transformer (replaces the 4-vector "
+         "cross-modal Transformer and the gate). V4-C = V4-A + D-MPNN graph branch as a 5th modality. "
+         "New from-scratch modules use lr x30 (token fusion) / x10 (D-MPNN), chosen in pilot_v4_lr.py on CV "
+         "fold 0 validation only.\n"]
+    base = ("V3 with ChemBERTa-77M-MLM (V4 baseline)", dict(backbone="chemberta_mlm"))
+    v4 = [(core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v)) for v in E.V4_VARIANTS]
+    L += sec_variants(st, "", [base] + v4)[1:]
+    L.append("Against the published architecture (V3 with MoLFormer):\n")
+    L += paired_tests(st, [("V3 with MoLFormer (published)", {})] + [base] + v4)
+    return L
+
+
 def sec_explain():
     p = os.path.join(RES, "explain", "explain_summary.json")
     L = ["## 7. Explainability (published 5-fold ensemble)\n"]
@@ -337,6 +352,7 @@ def main():
                       [("Tuned (Optuna, notebook)", {}), ("Untuned (notebook cell-15 fallback config)", dict(hp_set="untuned"))],
                       "Untuned = 8 heads, hidden 512, dropout 0.2, 3 classifier + 3 cross-modal layers, lr 5e-6, wd 1e-4.")
     L += sec_backbones(st)
+    L += sec_v4(st)
     L += sec_explain()
     L += ["## 8. Other result files\n",
           "- [descriptor_stats.md](descriptor_stats.md): statistical tests of the 6 descriptors vs activity "

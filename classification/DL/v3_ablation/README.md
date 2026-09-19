@@ -25,6 +25,10 @@ Run everything with the project venv: `E:\ML\BioActivity\.venv\Scripts\python.ex
 | `data_checks.py` | duplicates, test-vs-train similarity |
 | `v3_core.py`, `notebook_classes.py`, `migrate_legacy.py` | frozen legacy code (reference for `tests/test_core_parity.py`), the notebook's classes for unpickling, and the importer of the first run's results |
 | `tests/test_core_parity.py` | proves `core.py` == `v3_core.py` (bit-identical init, forward and training) |
+| `v4_modules.py` | V4 blocks: count/chiral 2048-bit Morgan, substructure tokens, molecular graphs, D-MPNN |
+| `pilot_v4_lr.py` | learning-rate pilot for the from-scratch V4 modules (CV fold 0 validation only) |
+| `enhancements.py` | seed ensembles and DL + XGBoost blends (incl. V4-D) from stored predictions, with DeLong tests |
+| `tests/test_v4_modules.py` | D-MPNN invariance / batching checks; every V4 variant builds and trains |
 
 Results: `results/store/` (one `.npz` + `.json` per trained model, with config hash),
 `results/baselines/`, `results/explain/`, `results/store_extra/` (runs outside the final design),

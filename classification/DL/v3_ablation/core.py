@@ -30,6 +30,9 @@ from data import ECFP_BITS, MACCS_BITS, N_DESC
 
 D = 768
 MODALITIES = ("smiles", "ecfp", "maccs", "desc")
+MODALITIES_ALL = MODALITIES + ("graph",)       # "graph" only with the V4-C D-MPNN branch
+# V4 parameters trained with base_lr * new_lr_mult (modules with no V3 counterpart)
+NEW_PREFIXES = ("graph_enc.", "graph_proj.", "tok_", "fp_emb.", "fp_cnt.")
 
 HP_SETS = {
     # optuna_results_v3__.json (the notebook's tuned V3)
@@ -57,11 +60,12 @@ def random_smiles(smi):
 
 
 class V3Dataset(torch.utils.data.Dataset):
-    def __init__(self, feats, idx, tokenizer, scaler, augment=False, max_len=512):
+    def __init__(self, feats, idx, tokenizer, scaler, augment=False, max_len=512, fp_key="ecfp", graphs=False):
         self.tok = tokenizer
         self.smiles = [feats["smiles"][i] for i in idx]
         self.labels = feats["labels"][idx].astype(np.float32)
-        self.ecfp = feats["ecfp"][idx].astype(np.float32)
+        self.ecfp = feats[fp_key][idx].astype(np.float32)
+        self.graphs = [feats["graphs"][i] for i in idx] if graphs else None
         self.maccs = feats["maccs"][idx].astype(np.float32)
         self.desc = scaler.transform(feats["desc_raw"][idx]).astype(np.float32)
         self.augment, self.max_len = augment, max_len
@@ -77,10 +81,11 @@ class V3Dataset(torch.utils.data.Dataset):
                                     max_length=self.max_len)["input_ids"], dtype=np.int64)
         else:
             ids = self.ids[i]
-        return ids, self.ecfp[i], self.maccs[i], self.desc[i], self.labels[i]
+        item = (ids, self.ecfp[i], self.maccs[i], self.desc[i], self.labels[i])
+        return item + (self.graphs[i],) if self.graphs is not None else item
 
 
-def make_collate(pad_id, fixed_len=None):
+def make_collate(pad_id, fixed_len=None, fp_tokens=False, graphs=False):
     def collate(batch):
         L = fixed_len or max(len(b[0]) for b in batch)
         ids = torch.full((len(batch), L), pad_id, dtype=torch.long)
@@ -88,13 +93,20 @@ def make_collate(pad_id, fixed_len=None):
         for j, b in enumerate(batch):
             ids[j, :len(b[0])] = torch.from_numpy(b[0])
             mask[j, :len(b[0])] = 1
-        return {
+        out = {
             "input_ids": ids, "attention_mask": mask,
             "ecfp": torch.from_numpy(np.stack([b[1] for b in batch])),
             "maccs": torch.from_numpy(np.stack([b[2] for b in batch])),
             "descriptors": torch.from_numpy(np.stack([b[3] for b in batch])),
             "labels": torch.tensor(np.array([b[4] for b in batch]), dtype=torch.float),
         }
+        if fp_tokens:     # V4-B: non-zero fingerprint bits as a substructure token set
+            import v4_modules
+            out.update(v4_modules.collate_fp_tokens([b[1] for b in batch]))
+        if graphs:        # V4-C: molecular graphs for the D-MPNN branch
+            import v4_modules
+            out.update(v4_modules.collate_graphs([b[5] for b in batch]))
+        return out
     return collate
 
 
@@ -182,10 +194,12 @@ class V3(nn.Module):
     def __init__(self, backbone="molformer", modalities=MODALITIES, fusion="xattn", use_type_emb=True,
                  use_gate=True, pooling="triple", n_pool_layers=4, freeze_bottom_n=None,
                  freeze_all_bert=False, num_heads=8, dropout=0.2, hidden_dim=512,
-                 num_classifier_layers=4, n_cross_layers=3, fast_molformer=True):
+                 num_classifier_layers=4, n_cross_layers=3, fast_molformer=True,
+                 ecfp_dim=ECFP_BITS, fp_dropout=0.0, graph=False, token_dim=256):
         super().__init__()
         self.backbone = backbone
-        self.modalities = tuple(m for m in MODALITIES if m in modalities)
+        self.modalities = tuple(m for m in MODALITIES if m in modalities) + (("graph",) if graph else ())
+        self.fp_dropout = fp_dropout
         self.fusion, self.use_type_emb, self.use_gate = fusion, use_type_emb, use_gate
         self.pooling = pooling
         self.freeze_all_bert = freeze_all_bert
@@ -211,18 +225,19 @@ class V3(nn.Module):
             if h != D:     # e.g. ChemBERTa-77M (384) -> 768; absent for MoLFormer
                 self.smiles_proj = nn.Linear(h, D)
 
-        self.modal_type_embed = nn.Embedding(4, D)
+        self.modal_type_embed = nn.Embedding(5 if graph else 4, D)
         nn.init.xavier_uniform_(self.modal_type_embed.weight)
+        vec = fusion != "token"          # V3-style per-modality vectors (all V3 variants)
 
-        if "ecfp" in self.modalities:
+        if "ecfp" in self.modalities and vec:
             self.ecfp_proj = nn.Sequential(
-                nn.Linear(ECFP_BITS, 512), nn.GELU(), nn.LayerNorm(512), nn.Dropout(dropout * 0.5),
+                nn.Linear(ecfp_dim, 512), nn.GELU(), nn.LayerNorm(512), nn.Dropout(dropout * 0.5),
                 nn.Linear(512, D), nn.GELU(), nn.LayerNorm(D), nn.Dropout(dropout))
-        if "maccs" in self.modalities:
+        if "maccs" in self.modalities and vec:
             self.maccs_proj = nn.Sequential(
                 nn.Linear(MACCS_BITS, 256), nn.GELU(), nn.LayerNorm(256), nn.Dropout(dropout * 0.5),
                 nn.Linear(256, D), nn.GELU(), nn.LayerNorm(D), nn.Dropout(dropout))
-        if "desc" in self.modalities:
+        if "desc" in self.modalities and vec:
             self.desc_proj = nn.Sequential(
                 nn.Linear(N_DESC, 64), nn.GELU(), nn.LayerNorm(64), nn.Dropout(dropout * 0.5),
                 nn.Linear(64, D), nn.GELU(), nn.LayerNorm(D), nn.Dropout(dropout))
@@ -232,10 +247,30 @@ class V3(nn.Module):
                 d_model=D, nhead=num_heads, dim_feedforward=D * 4,
                 dropout=dropout, batch_first=True, norm_first=True)
             self.cross_modal = nn.TransformerEncoder(enc_layer, num_layers=n_cross_layers)
-        self.gate = nn.Sequential(nn.Linear(D, D), nn.LayerNorm(D), nn.Sigmoid())
-        self.fusion_proj = nn.Linear(D * n_mod, D)
+        if vec:
+            self.gate = nn.Sequential(nn.Linear(D, D), nn.LayerNorm(D), nn.Sigmoid())
+            self.fusion_proj = nn.Linear(D * len(self.modalities), D)
 
-        layers, in_dim = [], D
+        if graph:                         # V4-C: D-MPNN over the molecular graph -> 5th modality token
+            import v4_modules
+            self.graph_enc = v4_modules.DMPNN(hidden=300, depth=3, dropout=dropout)
+            self.graph_proj = nn.Sequential(nn.Linear(300, D), nn.GELU(), nn.LayerNorm(D), nn.Dropout(dropout))
+
+        if fusion == "token":             # V4-B: token-level fusion of SMILES tokens + substructure tokens
+            dt = token_dim
+            self.tok_smiles = nn.Linear(self.bert.config.hidden_size, dt)
+            self.fp_emb = nn.Embedding(ecfp_dim, dt)
+            self.fp_cnt = nn.Linear(1, dt)
+            self.tok_maccs = nn.Linear(MACCS_BITS, dt)
+            self.tok_desc = nn.Linear(N_DESC, dt)
+            self.tok_type = nn.Embedding(5, dt)          # cls, smiles, substructure, maccs, desc
+            self.tok_cls = nn.Parameter(torch.zeros(1, 1, dt))
+            tl = nn.TransformerEncoderLayer(d_model=dt, nhead=num_heads, dim_feedforward=dt * 4,
+                                            dropout=dropout, batch_first=True, norm_first=True)
+            self.tok_encoder = nn.TransformerEncoder(tl, num_layers=n_cross_layers)
+            self.tok_norm = nn.LayerNorm(dt)
+
+        layers, in_dim = [], (token_dim if fusion == "token" else D)
         for i in range(num_classifier_layers):
             out_dim = hidden_dim // (2 ** i)
             layers += [nn.Linear(in_dim, out_dim), nn.LayerNorm(out_dim), nn.GELU(),
@@ -274,14 +309,19 @@ class V3(nn.Module):
                 v = (cls_pool + mean_pool + attn_pool) / 3
         return self.smiles_proj(v) if hasattr(self, "smiles_proj") else v
 
-    def modality_tokens(self, input_ids, attention_mask, ecfp, maccs, descriptors, inputs_embeds=None):
-        """[B, n_mod, D] projected modality tokens, in MODALITIES order."""
+    def modality_tokens(self, input_ids, attention_mask, ecfp, maccs, descriptors, inputs_embeds=None,
+                        graph_batch=None):
+        """[B, n_mod, D] projected modality tokens, in MODALITIES_ALL order."""
         embs = []
         for m in self.modalities:
             if m == "smiles":
                 embs.append(self.pool(self.smiles_hidden(input_ids, attention_mask, inputs_embeds), attention_mask))
             elif m == "ecfp":
+                if self.fp_dropout:
+                    ecfp = F.dropout(ecfp, self.fp_dropout, self.training)
                 embs.append(self.ecfp_proj(ecfp))
+            elif m == "graph":
+                embs.append(self.graph_proj(self.graph_enc(**graph_batch, n_graphs=ecfp.size(0))))
             elif m == "maccs":
                 embs.append(self.maccs_proj(maccs))
             else:
@@ -293,7 +333,7 @@ class V3(nn.Module):
         B = tokens.size(0)
         if self.fusion == "xattn":
             if self.use_type_emb:
-                ids = [MODALITIES.index(m) for m in self.modalities]
+                ids = [MODALITIES_ALL.index(m) for m in self.modalities]
                 t = self.modal_type_embed(torch.tensor(ids, device=tokens.device))
                 tokens = tokens + t.unsqueeze(0)
             tokens = self.cross_modal(tokens)
@@ -302,15 +342,39 @@ class V3(nn.Module):
         fused = self.fusion_proj(tokens.reshape(B, -1))
         return self.classifier(fused).squeeze(-1)
 
-    def forward(self, input_ids, attention_mask, ecfp, maccs, descriptors):
-        return self.fuse(self.modality_tokens(input_ids, attention_mask, ecfp, maccs, descriptors))
+    def token_forward(self, input_ids, attention_mask, ecfp, maccs, descriptors, fp_ids, fp_cnt, fp_mask):
+        """V4-B: one Transformer over [CLS] + SMILES tokens + substructure tokens + MACCS + descriptors."""
+        B = input_ids.size(0)
+        tt = self.tok_type.weight
+        S = self.tok_smiles(self.smiles_hidden(input_ids, attention_mask)) + tt[1]
+        if self.training and self.fp_dropout:          # substructure-token dropout
+            fp_mask = fp_mask & (torch.rand(fp_mask.shape, device=fp_mask.device) >= self.fp_dropout)
+        Fp = self.fp_emb(fp_ids) + self.fp_cnt(fp_cnt.unsqueeze(-1)) + tt[2]
+        Mc = (self.tok_maccs(maccs) + tt[3]).unsqueeze(1)
+        Ds = (self.tok_desc(descriptors) + tt[4]).unsqueeze(1)
+        C = self.tok_cls.expand(B, -1, -1) + tt[0]
+        X = torch.cat([C.float(), S.float(), Fp.float(), Mc.float(), Ds.float()], 1)
+        one = torch.ones(B, 1, dtype=torch.bool, device=X.device)
+        keep = torch.cat([one, attention_mask.bool(), fp_mask, one, one], 1)
+        Z = self.tok_encoder(X, src_key_padding_mask=~keep)
+        return self.classifier(self.tok_norm(Z[:, 0])).squeeze(-1)
+
+    def forward(self, input_ids, attention_mask, ecfp, maccs, descriptors, **extra):
+        if self.fusion == "token":
+            return self.token_forward(input_ids, attention_mask, ecfp, maccs, descriptors,
+                                      extra["fp_ids"], extra["fp_cnt"], extra["fp_mask"])
+        gb = {k: v for k, v in extra.items() if k.startswith("g_")} or None
+        return self.fuse(self.modality_tokens(input_ids, attention_mask, ecfp, maccs, descriptors, graph_batch=gb))
 
 
-def build_llrd_optimizer(model, base_lr, weight_decay, decay_factor=0.95):
-    """Same grouping as the notebook's build_llrd_optimizer."""
+def build_llrd_optimizer(model, base_lr, weight_decay, decay_factor=0.95, new_lr_mult=1.0):
+    """Same grouping as the notebook's build_llrd_optimizer. V4 modules without a V3 counterpart
+    (NEW_PREFIXES) get base_lr * new_lr_mult; for every V3 variant that set is empty."""
     no_decay = ["bias", "LayerNorm.weight", "LayerNorm.bias"]
     groups = []
-    head = [(n, p) for n, p in model.named_parameters() if not n.startswith("bert.") and p.requires_grad]
+    new = [(n, p) for n, p in model.named_parameters() if n.startswith(NEW_PREFIXES) and p.requires_grad]
+    head = [(n, p) for n, p in model.named_parameters()
+            if not n.startswith("bert.") and not n.startswith(NEW_PREFIXES) and p.requires_grad]
     groups += [
         {"params": [p for n, p in head if not any(nd in n for nd in no_decay)], "lr": base_lr, "weight_decay": weight_decay},
         {"params": [p for n, p in head if any(nd in n for nd in no_decay)], "lr": base_lr, "weight_decay": 0.0},
@@ -334,6 +398,10 @@ def build_llrd_optimizer(model, base_lr, weight_decay, decay_factor=0.95):
             ]
         # Parameters outside encoder/embeddings (MoLFormer's final LayerNorm, RoBERTa's
         # unused pooler) are left out of the optimizer, exactly like the notebook.
+    groups += [
+        {"params": [p for n, p in new if not any(nd in n for nd in no_decay)], "lr": base_lr * new_lr_mult, "weight_decay": weight_decay},
+        {"params": [p for n, p in new if any(nd in n for nd in no_decay)], "lr": base_lr * new_lr_mult, "weight_decay": 0.0},
+    ]
     groups = [g for g in groups if g["params"]]
     return torch.optim.AdamW(groups, fused=torch.cuda.is_available())
 
@@ -362,6 +430,11 @@ class RunCfg:
     max_epochs: int = 50
     patience: int = 12
     grad_accum: int = 2
+    # V4 options (omitted from to_dict() while at their defaults, so V3 config hashes are unchanged)
+    fp_kind: str = "ecfp1024"               # ecfp1024 (notebook) | ecfp2048c (count, chirality, log1p)
+    fp_dropout: float = 0.0
+    graph: bool = False
+    new_lr_mult: float = 1.0
 
     @property
     def hp(self):
@@ -371,7 +444,14 @@ class RunCfg:
         d = asdict(self)
         d["modalities"] = list(d["modalities"])
         d["hp"] = dict(self.hp)
+        for k, v in V4_DEFAULTS.items():
+            if d.get(k) == v:
+                d.pop(k)
         return d
+
+
+V4_DEFAULTS = {"fp_kind": "ecfp1024", "fp_dropout": 0.0, "graph": False, "new_lr_mult": 1.0}
+_V4A = {"fp_kind": "ecfp2048c", "fp_dropout": 0.1}
 
 
 VARIANTS = {
@@ -395,6 +475,12 @@ VARIANTS = {
     "no_llrd":         ("- LLRD (flat LR for all encoder layers)", {"llrd": 1.0}),
     "vanilla":         ("Unbalanced (b): no sampler + plain BCE (no imbalance handling at all)",
                         {"sampler": False, "loss": "bce"}),
+    # ── V4 ──
+    "fp_upgrade":      ("V4-A: count ECFP4 2048 bits + chirality + fingerprint dropout", dict(_V4A)),
+    # new_lr_mult from pilot_v4_lr.py (CV fold 0 validation only): token fusion x30, D-MPNN x10
+    "token_fusion":    ("V4-B: V4-A + substructure tokens, token-level cross-attention (no gate)",
+                        dict(_V4A, fusion="token", use_gate=False, new_lr_mult=30.0)),
+    "graph_branch":    ("V4-C: V4-A + D-MPNN graph branch as a 5th modality", dict(_V4A, graph=True, new_lr_mult=10.0)),
 }
 
 
@@ -413,7 +499,9 @@ def build_model(cfg: RunCfg):
               n_pool_layers=cfg.n_pool_layers, freeze_bottom_n=cfg.freeze_bottom_n,
               freeze_all_bert=cfg.freeze_all_bert, num_heads=hp["num_heads"], dropout=hp["dropout"],
               hidden_dim=hp["hidden_dim"], num_classifier_layers=hp["num_classifier_layers"],
-              n_cross_layers=hp["n_cross_layers"], fast_molformer=cfg.fast_molformer)
+              n_cross_layers=hp["n_cross_layers"], fast_molformer=cfg.fast_molformer,
+              ecfp_dim=2048 if cfg.fp_kind == "ecfp2048c" else ECFP_BITS, fp_dropout=cfg.fp_dropout,
+              graph=cfg.graph)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -446,10 +534,7 @@ def predict(model, ds, device, collate, batch_size=64, eval_seed=None, amp_dtype
         for i in range(0, len(ds), batch_size):
             b = collate([ds[j] for j in range(i, min(i + batch_size, len(ds)))])
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=device.type == "cuda"):
-                lg = model(input_ids=b["input_ids"].to(device, non_blocking=True),
-                           attention_mask=b["attention_mask"].to(device, non_blocking=True),
-                           ecfp=b["ecfp"].to(device), maccs=b["maccs"].to(device),
-                           descriptors=b["descriptors"].to(device))
+                lg = model(**{k: v.to(device, non_blocking=True) for k, v in b.items() if k != "labels"})
             probs.append(torch.sigmoid(lg.float()).cpu().numpy())
     finally:
         if eval_seed is not None:
@@ -471,10 +556,16 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
     hp = cfg.hp
     augment_ok = cfg.augment and "smiles" in cfg.modalities
     scaler = StandardScaler().fit(feats["desc_raw"][tr_idx])
-    tr_ds = V3Dataset(feats, tr_idx, tokenizer, scaler, augment=augment_ok)
-    vl_ds = V3Dataset(feats, vl_idx, tokenizer, scaler)
-    ev_ds = {k: V3Dataset(feats, idx, tokenizer, scaler) for k, idx in eval_sets.items()}
-    collate = make_collate(tokenizer.pad_token_id)
+    dkw, ckw = {}, {}
+    if cfg.fp_kind != "ecfp1024" or cfg.graph:          # V4 inputs (cached separately)
+        import v4_modules
+        feats = dict(feats, **v4_modules.get_v4_features(feats["smiles"]))
+        dkw = {"fp_key": "ecfp2048c" if cfg.fp_kind == "ecfp2048c" else "ecfp", "graphs": cfg.graph}
+        ckw = {"fp_tokens": cfg.fusion == "token", "graphs": cfg.graph}
+    tr_ds = V3Dataset(feats, tr_idx, tokenizer, scaler, augment=augment_ok, **dkw)
+    vl_ds = V3Dataset(feats, vl_idx, tokenizer, scaler, **dkw)
+    ev_ds = {k: V3Dataset(feats, idx, tokenizer, scaler, **dkw) for k, idx in eval_sets.items()}
+    collate = make_collate(tokenizer.pad_token_id, **ckw)
 
     if cfg.sampler:
         lbl = tr_ds.labels.astype(int)
@@ -487,7 +578,7 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
                                              collate_fn=collate, num_workers=0, pin_memory=True)
 
     model = build_model(cfg).to(device)
-    opt = build_llrd_optimizer(model, hp["learning_rate"], hp["weight_decay"], cfg.llrd)
+    opt = build_llrd_optimizer(model, hp["learning_rate"], hp["weight_decay"], cfg.llrd, cfg.new_lr_mult)
     crit = FocalLoss(alpha=0.5, gamma=2.0, smoothing=0.05) if cfg.loss == "focal" else nn.BCEWithLogitsLoss()
 
     total = (len(loader) // cfg.grad_accum) * cfg.max_epochs
@@ -511,11 +602,7 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
             if guard is not None:
                 guard.check()
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                lg = model(input_ids=b["input_ids"].to(device, non_blocking=True),
-                           attention_mask=b["attention_mask"].to(device, non_blocking=True),
-                           ecfp=b["ecfp"].to(device, non_blocking=True),
-                           maccs=b["maccs"].to(device, non_blocking=True),
-                           descriptors=b["descriptors"].to(device, non_blocking=True))
+                lg = model(**{k: v.to(device, non_blocking=True) for k, v in b.items() if k != "labels"})
                 loss = crit(lg.float(), b["labels"].to(device)) / cfg.grad_accum
             loss.backward()
             run_loss += loss.item() * cfg.grad_accum

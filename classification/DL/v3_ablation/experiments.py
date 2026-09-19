@@ -65,6 +65,11 @@ EXPERIMENTS = {
     "backbones": [j for b in NEW_BACKBONES for j in cv_jobs([42], backbone=b)],
 }
 
+# V4 (ChemBERTa-77M-MLM backbone): base + upgraded fingerprints / token fusion / D-MPNN, 3 seeds each
+V4_VARIANTS = ["fp_upgrade", "token_fusion", "graph_branch"]
+EXPERIMENTS["v4"] = (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm")
+                     + [j for v in V4_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)])
+
 # order in which the queue runs the new experiments
 QUEUE = ["scaffold", "unbalanced", "untuned", "backbones"]
 

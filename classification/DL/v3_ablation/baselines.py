@@ -48,9 +48,13 @@ def main():
     s = splits.get_split(args.split, df)
     dev_idx, folds, te = s["dev"], s["folds"], s["test"]
     y = feats["labels"].astype(int)
+    import v4_modules
+    fp2 = v4_modules.get_v4_features(feats["smiles"])["ecfp2048c"]
     feature_sets = {
         "ECFP": feats["ecfp"],
         "ECFP+MACCS+Desc": np.hstack([feats["ecfp"], feats["maccs"], feats["desc_raw"]]),
+        # V4 fingerprint: count-based Morgan r2, 2048 bits, chirality (log1p counts)
+        "ECFPc2048+MACCS+Desc": np.hstack([fp2, feats["maccs"], feats["desc_raw"]]),
     }
     for fs_name, X in feature_sets.items():
         for m_name, make in models(args.n_jobs).items():
