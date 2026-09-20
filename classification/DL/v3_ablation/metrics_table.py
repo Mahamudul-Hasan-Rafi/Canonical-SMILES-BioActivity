@@ -62,6 +62,8 @@ def main():
         add("V6 (neighbour-anchored)", core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v), E.REPRO_SEEDS)
     for v in E.V7_VARIANTS:
         add("V7 (combined)", core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v), E.REPRO_SEEDS)
+    for v in E.V8_VARIANTS:
+        add("V8 (regression-first)", core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v), E.REPRO_SEEDS)
     for name in ["RF__ECFP", "XGBoost__ECFP", "RF__ECFP+MACCS+Desc", "XGBoost__ECFP+MACCS+Desc",
                  "LogReg__ECFP+MACCS+Desc", "RF__ECFPc2048+MACCS+Desc", "XGBoost__ECFPc2048+MACCS+Desc"]:
         r = st.baseline("random", name)

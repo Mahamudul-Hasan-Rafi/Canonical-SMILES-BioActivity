@@ -78,8 +78,11 @@ EXPERIMENTS["pic50"] = [j for v in V5_VARIANTS for j in cv_jobs(REPRO_SEEDS, bac
 V6_VARIANTS = ["graph_mt_knn", "graph_mt_delta"]
 # V7: V5-MT + gated analogue correction (combination of the V5-MT and V6-R ideas)
 V7_VARIANTS = ["graph_mt_delta_res"]
+# V8: regression-first models (potency precision is what limits classification accuracy)
+V8_VARIANTS = ["reg_first", "reg_first_delta"]
 EXPERIMENTS["hard"] = [j for v in V6_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
 EXPERIMENTS["combo"] = [j for v in V7_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
+EXPERIMENTS["regression"] = [j for v in V8_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
 
 # order in which the queue runs the new experiments
 QUEUE = ["scaffold", "unbalanced", "untuned", "backbones"]

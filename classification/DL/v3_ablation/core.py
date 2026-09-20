@@ -520,6 +520,8 @@ class RunCfg:
     delta_w: float = 0.0                    # V6: weight of the anchored-delta potency loss
     nbr_residual: bool = False              # V7: analogue evidence as a gated logit correction
     nbr_drop: float = 0.0                   # V7: probability of dropping the analogue evidence in training
+    reg_loss: str = "huber"                 # V8: huber | mse (mse is the loss matched to RMSE)
+    select_metric: str = "auc"              # V8: auc | rmse (early stopping / best-epoch criterion)
 
     @property
     def hp(self):
@@ -537,7 +539,7 @@ class RunCfg:
 
 V4_DEFAULTS = {"fp_kind": "ecfp1024", "fp_dropout": 0.0, "graph": False, "new_lr_mult": 1.0,
                "aux_pic50": 0.0, "task": "cls", "retrieval": 0, "delta_w": 0.0,
-               "nbr_residual": False, "nbr_drop": 0.0}
+               "nbr_residual": False, "nbr_drop": 0.0, "reg_loss": "huber", "select_metric": "auc"}
 _V4A = {"fp_kind": "ecfp2048c", "fp_dropout": 0.1}
 
 
@@ -582,6 +584,13 @@ VARIANTS = {
     "graph_mt_delta_res": ("V7: V5-MT + gated analogue correction (zero-init gate, 20 % analogue dropout)",
                            dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, retrieval=5, delta_w=0.1,
                                 nbr_residual=True, nbr_drop=0.2)),
+    # ── V8: regression-first (predict pIC50, classify by the predicted potency) ──
+    "reg_first":       ("V8-R1: regression-first (no class sampler, early stop on val RMSE; pilot-selected)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
+                             select_metric="rmse")),
+    "reg_first_delta": ("V8-R2: V8-R1 + neighbour-anchored delta (analogue potency + learned change)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
+                             select_metric="rmse", retrieval=5, delta_w=0.1)),
 }
 
 
@@ -609,6 +618,16 @@ def build_model(cfg: RunCfg):
 # ─────────────────────────────────────────────────────────────────────────────
 # Train / predict
 # ─────────────────────────────────────────────────────────────────────────────
+def probs_to_pic50(p):
+    """Invert the V8/V5-REG score: p = sigmoid(2 * (pIC50 - 5.5))."""
+    p = np.clip(np.asarray(p, dtype=np.float64), 1e-9, 1 - 1e-9)
+    return 5.5 + np.log(p / (1 - p)) / 2.0
+
+
+def rmse_from_probs(p, pic50):
+    return float(np.sqrt(np.mean((probs_to_pic50(p) - np.asarray(pic50)) ** 2)))
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -717,6 +736,7 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
     sch = LambdaLR(opt, lr_lambda)
 
     best_auc, best_state, best_ep, pat = -1.0, None, 0, 0
+    best_val_auc = 0.0
     history = []
     t0 = time.time()
     for ep in range(cfg.max_epochs):
@@ -732,10 +752,13 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
                     out = model(**inputs, return_reg=True)
                     lg, zr = out[0], out[1]
                     zt = (b["pic50"].to(device) - model.pic_mu) / model.pic_sd
-                    reg = F.smooth_l1_loss(zr.float(), zt)
+                    reg = (F.mse_loss(zr.float(), zt) if cfg.reg_loss == "mse"
+                           else F.smooth_l1_loss(zr.float(), zt))
                     loss = (reg if cfg.task == "reg" else crit(lg.float(), b["labels"].to(device)) + cfg.aux_pic50 * reg)
                     if cfg.delta_w and len(out) > 2:        # V6-R: every analogue must predict our potency
-                        loss = loss + cfg.delta_w * F.smooth_l1_loss(out[2], zt.unsqueeze(1).expand_as(out[2]))
+                        tgt = zt.unsqueeze(1).expand_as(out[2])
+                        loss = loss + cfg.delta_w * (F.mse_loss(out[2], tgt) if cfg.reg_loss == "mse"
+                                                     else F.smooth_l1_loss(out[2], tgt))
                     loss = loss / cfg.grad_accum
                 else:
                     lg = model(**inputs)
@@ -749,9 +772,13 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
                 sch.step()
         vp = predict(model, vl_ds, device, collate, eval_seed=1000 + ep)
         auc = roc_auc_score(vl_ds.labels, vp)
-        history.append((ep + 1, run_loss / len(loader), float(auc)))
-        if auc > best_auc:
-            best_auc, best_ep, pat = auc, ep + 1, 0
+        score = auc
+        if cfg.select_metric == "rmse":      # V8: pick the epoch with the best potency precision
+            score = -rmse_from_probs(vp, feats["pic50"][vl_idx])
+        history.append((ep + 1, run_loss / len(loader), float(auc), float(score)))
+        if score > best_auc:
+            best_auc, best_ep, pat = score, ep + 1, 0
+            best_val_auc = auc
             best_state = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
         else:
             pat += 1
@@ -760,6 +787,8 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
     train_s = time.time() - t0
 
     model.load_state_dict(best_state)
+    if cfg.select_metric == "rmse":
+        best_auc = best_val_auc              # report AUROC of the selected epoch, as for every other run
     if save_path:
         torch.save({"cfg": cfg.to_dict(), "state_dict": best_state, "scaler_mean": scaler.mean_,
                     "scaler_scale": scaler.scale_}, save_path)
