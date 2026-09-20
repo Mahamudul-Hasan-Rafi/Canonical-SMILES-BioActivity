@@ -23,7 +23,7 @@ def main():
     from rdkit.Chem import rdFingerprintGenerator
     df = data.load_df()
     feats = data.get_features(df)
-    s = splits.get_split("random", df)
+    SPL = {n: splits.get_split(n, df) for n in ("random", "scaffold")}
     S = V.get_sim_matrix(feats["smiles"])
     gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048, includeChirality=True)
     rng = np.random.default_rng(0)
@@ -34,24 +34,26 @@ def main():
         assert abs(float(S[i, j]) - ref) < 1e-3, (i, j, S[i, j], ref)
     print("similarity matrix matches RDKit (5 random pairs)")
 
-    # replicate train_one's retrieval for every CV fold and check the invariants
-    for f, (ftr, fvl) in enumerate(s["folds"]):
-        tr_arr, vl, te = s["dev"][ftr], s["dev"][fvl], s["test"]
-        tr_set = set(tr_arr.tolist())
+    for split_name, s in SPL.items():
+        # replicate train_one's retrieval for every CV fold and check the invariants
+        for f, (ftr, fvl) in enumerate(s["folds"]):
+            tr_arr, vl, te = s["dev"][ftr], s["dev"][fvl], s["test"]
+            tr_set = set(tr_arr.tolist())
 
-        def nbr_of(idx):
-            sub = S[np.ix_(np.asarray(idx), tr_arr)].astype(np.float32)
-            sub[np.asarray(idx)[:, None] == tr_arr[None, :]] = -1.0
-            top = np.argsort(-sub, axis=1)[:, :5]
-            return tr_arr[top], np.take_along_axis(sub, top, 1)
-        for name, idx in (("train", tr_arr), ("val", vl), ("test", te)):
-            nb, sim = nbr_of(idx)
-            assert set(nb.ravel().tolist()) <= tr_set, f"fold {f} {name}: retrieved outside the training fold"
-            assert not (nb == np.asarray(idx)[:, None]).any(), f"fold {f} {name}: retrieved itself"
-            assert (sim >= 0).all()
-        assert not (set(vl.tolist()) | set(te.tolist())) & tr_set
-    print("retrieval: val/test only retrieve training-fold molecules, never themselves (all 5 folds)")
+            def nbr_of(idx):
+                sub = S[np.ix_(np.asarray(idx), tr_arr)].astype(np.float32)
+                sub[np.asarray(idx)[:, None] == tr_arr[None, :]] = -1.0
+                top = np.argsort(-sub, axis=1)[:, :5]
+                return tr_arr[top], np.take_along_axis(sub, top, 1)
+            for name, idx in (("train", tr_arr), ("val", vl), ("test", te)):
+                nb, sim = nbr_of(idx)
+                assert set(nb.ravel().tolist()) <= tr_set, f"fold {f} {name}: retrieved outside the training fold"
+                assert not (nb == np.asarray(idx)[:, None]).any(), f"fold {f} {name}: retrieved itself"
+                assert (sim >= 0).all()
+            assert not (set(vl.tolist()) | set(te.tolist())) & tr_set
+        print(f"retrieval [{split_name}]: val/test only retrieve training-fold molecules, never themselves (all 5 folds)")
 
+    s = SPL["random"]
     tr, vl = s["dev"][s["folds"][0][0]][:384], s["dev"][s["folds"][0][1]][:128]
     for v in ["graph_mt_knn", "graph_mt_delta"]:
         cfg = core.make_cfg(v, backbone="chemberta_mlm", max_epochs=2)

@@ -84,6 +84,11 @@ EXPERIMENTS["hard"] = [j for v in V6_VARIANTS for j in cv_jobs(REPRO_SEEDS, back
 EXPERIMENTS["combo"] = [j for v in V7_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
 EXPERIMENTS["regression"] = [j for v in V8_VARIANTS for j in cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
 
+# Final blend (V5-MT + V8-R2) re-measured on the scaffold split, same 3 seeds
+BLEND_VARIANTS = ["graph_mt", "reg_first_delta"]
+EXPERIMENTS["scaffold_blend"] = [j for v in BLEND_VARIANTS for j in
+                                 cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm", variant=v)]
+
 # order in which the queue runs the new experiments
 QUEUE = ["scaffold", "unbalanced", "untuned", "backbones"]
 
