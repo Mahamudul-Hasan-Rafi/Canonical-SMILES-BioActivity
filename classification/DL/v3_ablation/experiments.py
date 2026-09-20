@@ -89,6 +89,10 @@ BLEND_VARIANTS = ["graph_mt", "reg_first_delta"]
 EXPERIMENTS["scaffold_blend"] = [j for v in BLEND_VARIANTS for j in
                                  cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm", variant=v)]
 
+# Backbone control on the scaffold split: V3 architecture with ChemBERTa-77M-MLM, no V4+ modules.
+# Separates "the backbone swap hurts on unseen scaffolds" from "the added modules do".
+EXPERIMENTS["scaffold_backbone"] = cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm")
+
 # order in which the queue runs the new experiments
 QUEUE = ["scaffold", "unbalanced", "untuned", "backbones"]
 
