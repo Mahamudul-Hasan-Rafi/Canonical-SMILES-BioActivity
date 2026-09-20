@@ -27,14 +27,14 @@ def main():
     st = R.Store()
     rows = []
 
-    def add(group, label, kw, seeds):
-        runs = [(s, st.cv(seed=s, **kw)) for s in seeds]
+    def add(group, label, kw, seeds, split="random"):
+        runs = [(s, st.cv(split=split, seed=s, **kw)) for s in seeds]
         runs = [(s, r) for s, r in runs if r is not None]
         if not runs:
             return
         for proto in ("test", "cv"):
             vals = {k: [r[proto][k] for _, r in runs] for k in KEYS}
-            row = {"group": group, "experiment": label, "protocol": proto, "seeds": len(runs)}
+            row = {"group": group, "experiment": label, "split": split, "protocol": proto, "seeds": len(runs)}
             for k in KEYS:
                 m, s = np.mean(vals[k]), (np.std(vals[k], ddof=1) if len(runs) > 1 else np.nan)
                 row[NAMES.get(k, k)] = m
@@ -64,13 +64,25 @@ def main():
         add("V7 (combined)", core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v), E.REPRO_SEEDS)
     for v in E.V8_VARIANTS:
         add("V8 (regression-first)", core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v), E.REPRO_SEEDS)
-    for name in ["RF__ECFP", "XGBoost__ECFP", "RF__ECFP+MACCS+Desc", "XGBoost__ECFP+MACCS+Desc",
-                 "LogReg__ECFP+MACCS+Desc", "RF__ECFPc2048+MACCS+Desc", "XGBoost__ECFPc2048+MACCS+Desc"]:
-        r = st.baseline("random", name)
+    add("Scaffold split", "V3 full (notebook config)", {}, E.REPRO_SEEDS, split="scaffold")
+    add("Scaffold split", "no_smiles: ECFP + MACCS + descriptors only", dict(variant="no_smiles"),
+        E.REPRO_SEEDS, split="scaffold")
+    add("Scaffold split", "smiles_only: transformer branch alone", dict(variant="smiles_only"), [42], split="scaffold")
+    add("Scaffold split", "V5-MT (ChemBERTa + graph + pIC50 head)", dict(backbone="chemberta_mlm", variant="graph_mt"),
+        E.REPRO_SEEDS, split="scaffold")
+    add("Scaffold split", "V8-R2 (regression-first + anchored delta)",
+        dict(backbone="chemberta_mlm", variant="reg_first_delta"), E.REPRO_SEEDS, split="scaffold")
+
+    for split, name in [(sp, n) for sp in ("random", "scaffold")
+                        for n in ("RF__ECFP", "XGBoost__ECFP", "RF__ECFP+MACCS+Desc", "XGBoost__ECFP+MACCS+Desc",
+                                  "LogReg__ECFP+MACCS+Desc", "RF__ECFPc2048+MACCS+Desc",
+                                  "XGBoost__ECFPc2048+MACCS+Desc")]:
+        r = st.baseline(split, name)
         if r is None:
             continue
         for proto in ("test", "cv"):
-            row = {"group": "Classical baseline", "experiment": name.replace("__", " on "), "protocol": proto, "seeds": 1}
+            row = {"group": "Classical baseline", "experiment": name.replace("__", " on "), "split": split,
+                   "protocol": proto, "seeds": 1}
             for k in KEYS:
                 row[NAMES.get(k, k)] = r[proto][k]
                 row[NAMES.get(k, k) + " sd"] = np.nan
