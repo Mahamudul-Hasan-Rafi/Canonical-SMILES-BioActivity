@@ -79,8 +79,9 @@ def main():
     L = ["# Final metrics - all headline models\n",
          "3-seed ensembles (15 fold-models each); threshold = out-of-fold MCC-optimal, as in the notebook. "
          "Precision / recall / F1 are for the active class.\n"]
-    for proto, title, pick in (("test", "Held-out test set (825 molecules)", 1),
-                               ("oof", "Out-of-fold (4,669 development molecules)", 0)):
+    n_te, n_dev = len(st.splits[sp]["test"]), len(dev)
+    for proto, title, pick in (("test", f"Held-out test set ({n_te:,} molecules)", 1),
+                               ("oof", f"Out-of-fold ({n_dev:,} development molecules)", 0)):
         L += [f"## {title}\n", "| model | " + " | ".join(NAME.get(k, k) for k in KEYS) + " | errors |",
               "|" + "---|" * (2 + len(KEYS))]
         for k, v in mods.items():
