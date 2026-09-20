@@ -94,6 +94,15 @@ EXPERIMENTS["scaffold_blend"] = [j for v in BLEND_VARIANTS for j in
 EXPERIMENTS["scaffold_backbone"] = cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm")
 
 # V9: EMA + test-time augmentation + multi-sample dropout on the V5-MT stack, both splits
+# Full-CV confirmation of the Optuna-tuned configurations, both splits
+EXPERIMENTS["hpo_tuned"] = [j for v in ("graph_mt_hpo", "reg_delta_hpo") for j in
+                            (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)
+                             + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm", variant=v))]
+
+# Confirmation of the probe-selected learning rate, both deep variants, random split
+EXPERIMENTS["hpo_confirm"] = [j for v in ("graph_mt_lr4", "reg_delta_lr4") for j in
+                              cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
+
 EXPERIMENTS["v9"] = (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant="v9")
                      + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm", variant="v9"))
 

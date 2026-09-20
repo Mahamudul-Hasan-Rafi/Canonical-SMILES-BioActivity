@@ -57,7 +57,9 @@ def main():
     for nm, kw in [("V3", {}), ("V5-MT", dict(backbone="chemberta_mlm", variant="graph_mt")),
                    ("V7", dict(backbone="chemberta_mlm", variant="graph_mt_delta_res")),
                    ("V8-R2", dict(backbone="chemberta_mlm", variant="reg_first_delta")),
-                   ("V9", dict(backbone="chemberta_mlm", variant="v9"))]:
+                   ("V9", dict(backbone="chemberta_mlm", variant="v9")),
+                   ("V5-MT-hpo", dict(backbone="chemberta_mlm", variant="graph_mt_hpo")),
+                   ("V8-R2-hpo", dict(backbone="chemberta_mlm", variant="reg_delta_hpo"))]:
         r = ens(**kw)
         if r is not None:
             cand[nm] = r

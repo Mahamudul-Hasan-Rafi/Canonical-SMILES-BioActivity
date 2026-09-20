@@ -529,10 +529,11 @@ class RunCfg:
     ema: float = 0.0                        # V9: decay of the weight EMA evaluated instead of the raw weights
     tta: int = 0                            # V9: augmented passes averaged at prediction time
     msd: int = 0                            # V9: multi-sample dropout copies in the classifier head
+    hp_override: dict = field(default_factory=dict)   # per-run hyperparameter overrides (tuning)
 
     @property
     def hp(self):
-        return HP_SETS[self.hp_set]
+        return {**HP_SETS[self.hp_set], **self.hp_override}
 
     def to_dict(self):
         d = asdict(self)
@@ -547,7 +548,7 @@ class RunCfg:
 V4_DEFAULTS = {"fp_kind": "ecfp1024", "fp_dropout": 0.0, "graph": False, "new_lr_mult": 1.0,
                "aux_pic50": 0.0, "task": "cls", "retrieval": 0, "delta_w": 0.0,
                "nbr_residual": False, "nbr_drop": 0.0, "reg_loss": "huber", "select_metric": "auc",
-               "ema": 0.0, "tta": 0, "msd": 0}
+               "ema": 0.0, "tta": 0, "msd": 0, "hp_override": {}}
 _V4A = {"fp_kind": "ecfp2048c", "fp_dropout": 0.1}
 
 
@@ -596,6 +597,22 @@ VARIANTS = {
     "reg_first":       ("V8-R1: regression-first (no class sampler, early stop on val RMSE; pilot-selected)",
                         dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
                              select_metric="rmse")),
+    # Optuna-tuned for the new architecture (40 trials each, notebook protocol; see results/optuna_*.json)
+    "graph_mt_hpo":    ("V5-MT, Optuna-tuned for the ChemBERTa + graph stack",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.20268951562323653,
+                             hp_override={"num_heads": 8, "hidden_dim": 256, "dropout": 0.1, "num_classifier_layers": 2, "n_cross_layers": 2, "batch_size": 32, "learning_rate": 4.733155327510708e-05, "weight_decay": 0.00098182268781891})),
+    "reg_delta_hpo":   ("V8-R2, Optuna-tuned for the ChemBERTa + graph + retrieval stack",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
+                             select_metric="rmse", retrieval=5, delta_w=0.16425927623668438,
+                             hp_override={"num_heads": 4, "hidden_dim": 256, "dropout": 0.2, "num_classifier_layers": 4, "n_cross_layers": 2, "batch_size": 32, "learning_rate": 1.980912684420755e-05, "weight_decay": 0.0007342711722597161})),
+    # Probe-selected learning rate (4e-5) for the new deep branch; everything else unchanged
+    "graph_mt_lr4":    ("V5-MT with lr 4e-5 (probe-selected for the ChemBERTa stack)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1,
+                             hp_override={"learning_rate": 4e-5})),
+    "reg_delta_lr4":   ("V8-R2 with lr 4e-5 (probe-selected for the ChemBERTa stack)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
+                             select_metric="rmse", retrieval=5, delta_w=0.1,
+                             hp_override={"learning_rate": 4e-5})),
     # V9: inference- and optimisation-level refinements of V5-MT (no new representation)
     "v9":              ("V9: V5-MT + weight EMA + test-time augmentation + multi-sample dropout",
                         dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, ema=0.999, tta=4, msd=4)),
@@ -726,7 +743,7 @@ def tta_predict(model, ds, device, collate, k, eval_seed=7):
 
 
 def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, device,
-              tokenizer, log=print, guard=None, save_path=None):
+              tokenizer, log=print, guard=None, save_path=None, on_epoch=None):
     """Train on tr_idx, early-stop on AUROC of vl_idx; return predictions of the best
     checkpoint on vl_idx and on every eval set (optionally save that checkpoint)."""
     from sklearn.metrics import roc_auc_score
@@ -841,6 +858,10 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
         if cfg.select_metric == "rmse":      # V8: pick the epoch with the best potency precision
             score = -rmse_from_probs(vp, feats["pic50"][vl_idx])
         history.append((ep + 1, run_loss / len(loader), float(auc), float(score)))
+        if on_epoch is not None and not on_epoch(ep + 1, float(auc), float(score)):
+            if ema is not None:
+                ema.restore(model)
+            break              # caller (an HPO pruner) asked to stop this run
         if score > best_auc:
             best_auc, best_ep, pat = score, ep + 1, 0
             best_val_auc = auc
