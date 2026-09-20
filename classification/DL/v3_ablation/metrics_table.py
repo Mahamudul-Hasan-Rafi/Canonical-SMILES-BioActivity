@@ -19,6 +19,7 @@ import core
 import experiments as E
 import report as R
 
+NL = chr(10)
 KEYS = ["Accuracy", "Balanced Acc", "Precision", "Sensitivity", "F1", "ROC-AUC", "MCC"]
 NAMES = {"Sensitivity": "Recall"}
 
@@ -94,15 +95,19 @@ def main():
 
     def cell(r, c):
         return f"{r[c]:.4f}" if np.isnan(r[c + ' sd']) else f"{r[c]:.4f} ± {r[c + ' sd']:.4f}"
-    L = ["# Final metrics - all experiments on the notebook split\n"]
-    for proto, title in (("test", "Held-out test set (825 molecules): 5-model ensemble, OOF MCC-optimal threshold"),
+    L = ["# Final metrics - all experiments, both splits" + NL]
+    for proto, title in (("test", "Held-out test set: 5-model ensemble per seed, OOF MCC-optimal threshold "
+                                  "(random split 825 molecules, scaffold split 735)"),
                          ("cv", "5-fold cross-validation (out-of-fold, mean over folds, OOF max-F1 threshold)")):
-        L += [f"## {title}\n", "| group | experiment | seeds | " + " | ".join(cols) + " |", "|" + "---|" * (3 + len(cols))]
+        L += ["## " + title + NL, "| group | experiment | split | seeds | " + " | ".join(cols) + " |",
+              "|" + "---|" * (4 + len(cols))]
         for _, r in t[t.protocol == proto].iterrows():
-            L.append(f"| {r['group']} | {r['experiment']} | {r['seeds']} | " + " | ".join(cell(r, c) for c in cols) + " |")
+            L.append(f"| {r['group']} | {r['experiment']} | {r['split']} | {r['seeds']} | "
+                     + " | ".join(cell(r, c) for c in cols) + " |")
         L.append("")
-    L.append("Precision, recall and F1 refer to the active class. Recall of the inactive class = specificity "
-             "(see REPORT.md). ± = sd over training seeds where 3 seeds exist.\n")
+    L.append("Precision, recall and F1 refer to the active class. Recall of the inactive class = specificity. "
+             "+/- = sd over training seeds where 3 seeds exist. Rows are per-seed results averaged over seeds; "
+             "for the 3-seed ensembles (15 models) see final_table_random.md / final_table_scaffold.md." + NL)
     with open(os.path.join(R.RES, "metrics_all.md"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(L))
     print("\n".join(L))
