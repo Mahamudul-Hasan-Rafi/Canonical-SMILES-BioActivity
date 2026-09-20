@@ -144,6 +144,45 @@ def main():
     # V5 counterpart: XGBoost regressing pIC50 (training folds only); score = sigmoid(2 * (pIC50_hat - 5.5))
     from xgboost import XGBRegressor
     pic = data.get_pic50(feats["smiles"])
+    # potency regressors on every selected feature set (score = sigmoid(2 * (pIC50_hat - 5.5)))
+    from lightgbm import LGBMRegressor
+    from catboost import CatBoostRegressor
+    from sklearn.ensemble import RandomForestRegressor
+    from xgboost import XGBRegressor as _XGBR
+    pic_all = data.get_pic50(feats["smiles"])
+    regs = {
+        "XGBReg": lambda: _XGBR(n_estimators=600, max_depth=6, learning_rate=0.05, subsample=0.8,
+                                colsample_bytree=0.5, n_jobs=args.n_jobs, random_state=42, tree_method="hist"),
+        "LGBMReg": lambda: LGBMRegressor(n_estimators=600, num_leaves=63, learning_rate=0.05, subsample=0.8,
+                                         subsample_freq=1, colsample_bytree=0.5, n_jobs=args.n_jobs,
+                                         random_state=42, verbose=-1),
+        "CatReg": lambda: CatBoostRegressor(iterations=600, depth=6, learning_rate=0.05, rsm=0.5, random_seed=42,
+                                            thread_count=args.n_jobs, verbose=0, allow_writing_files=False),
+        "RFReg": lambda: RandomForestRegressor(n_estimators=500, n_jobs=args.n_jobs, random_state=42),
+    }
+    sig = lambda v: 1 / (1 + np.exp(-2 * (v - 5.5)))
+    for fs_name, X in feature_sets.items():
+        for r_name, make in regs.items():
+            name = f"{r_name}__{fs_name}"
+            path = os.path.join(out_dir, name + ".npz")
+            if os.path.exists(path):
+                continue
+            t0 = time.time()
+            oof = np.zeros(len(dev_idx), np.float32)
+            oof_pic = np.zeros(len(dev_idx), np.float32)
+            test_probs, test_pic = [], []
+            for f_tr, f_vl in folds:
+                reg = make().fit(X[dev_idx[f_tr]], pic_all[dev_idx[f_tr]])
+                pv, pt = reg.predict(X[dev_idx[f_vl]]), reg.predict(X[te])
+                oof[f_vl], oof_pic[f_vl] = sig(pv), pv
+                test_probs.append(sig(pt))
+                test_pic.append(pt)
+            np.savez(path, oof=oof, oof_pic50=oof_pic, oof_labels=y[dev_idx], test_probs=np.stack(test_probs),
+                     test_pic50=np.stack(test_pic), test_labels=y[te], dev_idx=dev_idx, test_idx=te)
+            rmse = float(np.sqrt(np.mean((oof_pic - pic_all[dev_idx]) ** 2)))
+            rmse_t = float(np.sqrt(np.mean((np.mean(test_pic, 0) - pic_all[te]) ** 2)))
+            print(f"{name:<28} OOF RMSE {rmse:.4f} | test RMSE {rmse_t:.4f} | {time.time()-t0:.0f}s", flush=True)
+
     if "ECFPc2048+MACCS+Desc" not in feature_sets:
         return
     X = feature_sets["ECFPc2048+MACCS+Desc"]
