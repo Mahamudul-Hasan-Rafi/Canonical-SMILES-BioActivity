@@ -34,6 +34,7 @@ def rmse(e):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="random", choices=["random", "scaffold"])
+    ap.add_argument("--set", default="ECFP+Desc", help="feature set the classical models were built on")
     args = ap.parse_args()
     sp = args.split
     st = R.Store()
@@ -43,7 +44,7 @@ def main():
     p_dev, p_te = pic[dev], pic[te]
 
     def npz(nm):
-        return np.load(os.path.join(R.RES, "baselines", sp, nm + "__ECFP+Desc.npz"))
+        return np.load(os.path.join(R.RES, "baselines", sp, nm + "__" + args.set + ".npz"))
 
     def ens(**kw):
         rr = [r for r in (st.cv(split=sp, seed=s, **kw) for s in R.SEEDS) if r is not None]
@@ -103,7 +104,8 @@ def main():
         L.append(f"| {k} | **{accuracy_score(y, po):.4f}** | {accuracy_score(yt, pt):.4f} | "
                  f"{matthews_corrcoef(y, po):.4f} | {matthews_corrcoef(yt, pt):.4f} | "
                  f"{roc_auc_score(yt, v[1]):.4f} | {accuracy_score(yt, pt) - ba:+.4f} |")
-    with open(os.path.join(R.RES, f"position_{sp}.md"), "w", encoding="utf-8") as fh:
+    tag = "" if args.set == "ECFP+Desc" else "_rich"
+    with open(os.path.join(R.RES, f"position_{sp}{tag}.md"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(L))
     print("\n".join(L))
 
