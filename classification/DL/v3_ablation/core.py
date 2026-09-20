@@ -212,7 +212,7 @@ class V3(nn.Module):
                  freeze_all_bert=False, num_heads=8, dropout=0.2, hidden_dim=512,
                  num_classifier_layers=4, n_cross_layers=3, fast_molformer=True,
                  ecfp_dim=ECFP_BITS, fp_dropout=0.0, graph=False, token_dim=256, reg_head=False, task="cls",
-                 retrieval=0):
+                 retrieval=0, nbr_residual=False, nbr_drop=0.0):
         super().__init__()
         self.backbone = backbone
         self.modalities = tuple(m for m in MODALITIES if m in modalities) + (("graph",) if graph else ())
@@ -309,7 +309,12 @@ class V3(nn.Module):
             self.nbr_norm = nn.LayerNorm(H)
             self.nbr_delta = nn.Linear(H, 1)          # predicted potency change query - neighbour (z units)
             self.nbr_attn = nn.Linear(H, 1)
-            self.nbr_out = nn.Linear(H + 1, D)
+            self.nbr_residual, self.nbr_drop = nbr_residual, nbr_drop
+            if nbr_residual:      # V7: analogue evidence as a gated correction to the V5-MT logit
+                self.nbr_corr = nn.Linear(H + 1, 1)
+                self.nbr_gate = nn.Parameter(torch.zeros(1))     # starts at 0 -> V7 begins as exactly V5-MT
+            else:
+                self.nbr_out = nn.Linear(H + 1, D)
 
     def train(self, mode=True):
         super().train(mode)
@@ -372,7 +377,12 @@ class V3(nn.Module):
         a = torch.softmax(self.nbr_attn(h).squeeze(-1).float(), dim=1)
         ctx = (a.unsqueeze(-1) * h.float()).sum(1)
         pooled = (a * anch).sum(1, keepdim=True)
-        return fused + self.nbr_out(torch.cat([ctx, pooled], -1).to(fused.dtype)), anch
+        ev = torch.cat([ctx, pooled], -1)                       # pooled analogue evidence
+        if self.nbr_drop and self.training:                     # V7: the base path must stand on its own
+            ev = ev * (torch.rand(ev.size(0), 1, device=ev.device) >= self.nbr_drop).to(ev.dtype)
+        if getattr(self, "nbr_residual", False):
+            return None, anch, self.nbr_gate * self.nbr_corr(ev.to(self.nbr_gate.dtype)).squeeze(-1)
+        return fused + self.nbr_out(ev.to(fused.dtype)), anch, None
 
     def fuse(self, tokens, nbr=None):
         """modality tokens [B, n_mod, D] -> logit [B]"""
@@ -386,10 +396,14 @@ class V3(nn.Module):
         if self.use_gate:
             tokens = self.gate(tokens) * tokens
         fused = self.fusion_proj(tokens.reshape(B, -1))
-        anch = None
+        anch, corr = None, None
         if nbr is not None and hasattr(self, "nbr_diff"):
-            fused, anch = self.neighbour_update(fused, **nbr)
+            new_fused, anch, corr = self.neighbour_update(fused, **nbr)
+            if new_fused is not None:
+                fused = new_fused
         logit = self.classifier(fused).squeeze(-1)
+        if corr is not None:              # V7: V5-MT logit + learned analogue correction
+            logit = logit.float() + corr.float()
         if not hasattr(self, "reg_head"):
             return logit
         z = self.reg_head(fused).squeeze(-1)                 # standardised pIC50
@@ -504,6 +518,8 @@ class RunCfg:
     task: str = "cls"                       # V5: cls | reg (classify by predicted pIC50)
     retrieval: int = 0                      # V6: number of retrieved training analogues (0 = off)
     delta_w: float = 0.0                    # V6: weight of the anchored-delta potency loss
+    nbr_residual: bool = False              # V7: analogue evidence as a gated logit correction
+    nbr_drop: float = 0.0                   # V7: probability of dropping the analogue evidence in training
 
     @property
     def hp(self):
@@ -520,7 +536,8 @@ class RunCfg:
 
 
 V4_DEFAULTS = {"fp_kind": "ecfp1024", "fp_dropout": 0.0, "graph": False, "new_lr_mult": 1.0,
-               "aux_pic50": 0.0, "task": "cls", "retrieval": 0, "delta_w": 0.0}
+               "aux_pic50": 0.0, "task": "cls", "retrieval": 0, "delta_w": 0.0,
+               "nbr_residual": False, "nbr_drop": 0.0}
 _V4A = {"fp_kind": "ecfp2048c", "fp_dropout": 0.1}
 
 
@@ -561,6 +578,10 @@ VARIANTS = {
                         dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, retrieval=5)),
     "graph_mt_delta":  ("V6-R: V6-K + anchored-delta potency loss (analogue potency + learned change)",
                         dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, retrieval=5, delta_w=0.1)),
+    # ── V7: V5-MT prediction path kept intact; analogue evidence only as a gated correction ──
+    "graph_mt_delta_res": ("V7: V5-MT + gated analogue correction (zero-init gate, 20 % analogue dropout)",
+                           dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, retrieval=5, delta_w=0.1,
+                                nbr_residual=True, nbr_drop=0.2)),
 }
 
 
@@ -582,7 +603,7 @@ def build_model(cfg: RunCfg):
               n_cross_layers=hp["n_cross_layers"], fast_molformer=cfg.fast_molformer,
               ecfp_dim=2048 if cfg.fp_kind == "ecfp2048c" else ECFP_BITS, fp_dropout=cfg.fp_dropout,
               graph=cfg.graph, reg_head=cfg.aux_pic50 > 0 or cfg.task == "reg" or cfg.retrieval > 0, task=cfg.task,
-              retrieval=cfg.retrieval)
+              retrieval=cfg.retrieval, nbr_residual=cfg.nbr_residual, nbr_drop=cfg.nbr_drop)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

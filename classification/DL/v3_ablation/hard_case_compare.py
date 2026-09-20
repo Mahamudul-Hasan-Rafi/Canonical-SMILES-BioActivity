@@ -38,7 +38,8 @@ def main():
         return np.mean([r["oof"] for r in rr], 0), np.mean([r["ens"] for r in rr], 0), rr[0]["test_y"]
     models = {"V3 (MoLFormer, published)": ens(), "V5-MT": ens(backbone="chemberta_mlm", variant="graph_mt"),
               "V6-K (analogue context)": ens(backbone="chemberta_mlm", variant="graph_mt_knn"),
-              "V6-R (anchored delta)": ens(backbone="chemberta_mlm", variant="graph_mt_delta")}
+              "V6-R (anchored delta)": ens(backbone="chemberta_mlm", variant="graph_mt_delta"),
+              "V7 (gated correction)": ens(backbone="chemberta_mlm", variant="graph_mt_delta_res")}
     z = np.load(os.path.join(R.RES, "baselines", "random", "XGBoost__ECFPc2048+MACCS+Desc.npz"))
     models["XGBoost (V4 fingerprints)"] = (z["oof"], z["test_probs"].mean(0), z["test_labels"].astype(int))
     models = {k: v for k, v in models.items() if v is not None}

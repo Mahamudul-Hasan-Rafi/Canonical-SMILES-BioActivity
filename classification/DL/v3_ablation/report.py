@@ -330,7 +330,7 @@ def sec_v6(st):
          "anchored-delta loss (analogue potency + learned change = own potency). Per-category results: "
          "[hard_case_compare.md](hard_case_compare.md).\n"]
     ref = ("V5-MT (reference)", dict(backbone="chemberta_mlm", variant="graph_mt"))
-    v6 = [(core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v)) for v in E.V6_VARIANTS]
+    v6 = [(core.VARIANTS[v][0], dict(backbone="chemberta_mlm", variant=v)) for v in E.V6_VARIANTS + E.V7_VARIANTS]
     L += sec_variants(st, "", [ref] + v6)[1:]
     return L
 

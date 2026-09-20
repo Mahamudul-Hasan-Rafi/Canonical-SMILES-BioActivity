@@ -84,6 +84,7 @@ def main():
     add_seed_ens("V5-REG (3 seeds)", backbone="chemberta_mlm", variant="graph_reg")
     add_seed_ens("V6-K (3 seeds)", backbone="chemberta_mlm", variant="graph_mt_knn")
     add_seed_ens("V6-R (3 seeds)", backbone="chemberta_mlm", variant="graph_mt_delta")
+    add_seed_ens("V7 (3 seeds)", backbone="chemberta_mlm", variant="graph_mt_delta_res")
     for b in ["XGBoost__ECFPc2048+MACCS+Desc", "RF__ECFPc2048+MACCS+Desc", "XGBoost__ECFP+MACCS+Desc",
               "RF__ECFP+MACCS+Desc"]:
         z = np.load(os.path.join(R.RES, "baselines", "random", b + ".npz"))
