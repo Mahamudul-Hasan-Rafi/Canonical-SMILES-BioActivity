@@ -93,6 +93,10 @@ EXPERIMENTS["scaffold_blend"] = [j for v in BLEND_VARIANTS for j in
 # Separates "the backbone swap hurts on unseen scaffolds" from "the added modules do".
 EXPERIMENTS["scaffold_backbone"] = cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm")
 
+# V9: EMA + test-time augmentation + multi-sample dropout on the V5-MT stack, both splits
+EXPERIMENTS["v9"] = (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant="v9")
+                     + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm", variant="v9"))
+
 # order in which the queue runs the new experiments
 QUEUE = ["scaffold", "unbalanced", "untuned", "backbones"]
 

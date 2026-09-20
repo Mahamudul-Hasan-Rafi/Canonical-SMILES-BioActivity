@@ -212,9 +212,10 @@ class V3(nn.Module):
                  freeze_all_bert=False, num_heads=8, dropout=0.2, hidden_dim=512,
                  num_classifier_layers=4, n_cross_layers=3, fast_molformer=True,
                  ecfp_dim=ECFP_BITS, fp_dropout=0.0, graph=False, token_dim=256, reg_head=False, task="cls",
-                 retrieval=0, nbr_residual=False, nbr_drop=0.0):
+                 retrieval=0, nbr_residual=False, nbr_drop=0.0, msd=0):
         super().__init__()
         self.backbone = backbone
+        self.msd = msd
         self.modalities = tuple(m for m in MODALITIES if m in modalities) + (("graph",) if graph else ())
         self.fp_dropout = fp_dropout
         self.fusion, self.use_type_emb, self.use_gate = fusion, use_type_emb, use_gate
@@ -401,7 +402,10 @@ class V3(nn.Module):
             new_fused, anch, corr = self.neighbour_update(fused, **nbr)
             if new_fused is not None:
                 fused = new_fused
-        logit = self.classifier(fused).squeeze(-1)
+        if self.msd and self.training:     # V9: average the head over several dropout masks
+            logit = torch.stack([self.classifier(fused).squeeze(-1) for _ in range(self.msd)]).mean(0)
+        else:
+            logit = self.classifier(fused).squeeze(-1)
         if corr is not None:              # V7: V5-MT logit + learned analogue correction
             logit = logit.float() + corr.float()
         if not hasattr(self, "reg_head"):
@@ -522,6 +526,9 @@ class RunCfg:
     nbr_drop: float = 0.0                   # V7: probability of dropping the analogue evidence in training
     reg_loss: str = "huber"                 # V8: huber | mse (mse is the loss matched to RMSE)
     select_metric: str = "auc"              # V8: auc | rmse (early stopping / best-epoch criterion)
+    ema: float = 0.0                        # V9: decay of the weight EMA evaluated instead of the raw weights
+    tta: int = 0                            # V9: augmented passes averaged at prediction time
+    msd: int = 0                            # V9: multi-sample dropout copies in the classifier head
 
     @property
     def hp(self):
@@ -539,7 +546,8 @@ class RunCfg:
 
 V4_DEFAULTS = {"fp_kind": "ecfp1024", "fp_dropout": 0.0, "graph": False, "new_lr_mult": 1.0,
                "aux_pic50": 0.0, "task": "cls", "retrieval": 0, "delta_w": 0.0,
-               "nbr_residual": False, "nbr_drop": 0.0, "reg_loss": "huber", "select_metric": "auc"}
+               "nbr_residual": False, "nbr_drop": 0.0, "reg_loss": "huber", "select_metric": "auc",
+               "ema": 0.0, "tta": 0, "msd": 0}
 _V4A = {"fp_kind": "ecfp2048c", "fp_dropout": 0.1}
 
 
@@ -588,6 +596,9 @@ VARIANTS = {
     "reg_first":       ("V8-R1: regression-first (no class sampler, early stop on val RMSE; pilot-selected)",
                         dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
                              select_metric="rmse")),
+    # V9: inference- and optimisation-level refinements of V5-MT (no new representation)
+    "v9":              ("V9: V5-MT + weight EMA + test-time augmentation + multi-sample dropout",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, ema=0.999, tta=4, msd=4)),
     "reg_first_delta": ("V8-R2: V8-R1 + neighbour-anchored delta (analogue potency + learned change)",
                         dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
                              select_metric="rmse", retrieval=5, delta_w=0.1)),
@@ -612,6 +623,7 @@ def build_model(cfg: RunCfg):
               n_cross_layers=hp["n_cross_layers"], fast_molformer=cfg.fast_molformer,
               ecfp_dim=2048 if cfg.fp_kind == "ecfp2048c" else ECFP_BITS, fp_dropout=cfg.fp_dropout,
               graph=cfg.graph, reg_head=cfg.aux_pic50 > 0 or cfg.task == "reg" or cfg.retrieval > 0, task=cfg.task,
+              msd=cfg.msd,
               retrieval=cfg.retrieval, nbr_residual=cfg.nbr_residual, nbr_drop=cfg.nbr_drop)
 
 
@@ -663,6 +675,54 @@ def predict(model, ds, device, collate, batch_size=64, eval_seed=None, amp_dtype
             if cuda_state is not None:
                 torch.cuda.set_rng_state_all(cuda_state)
     return np.concatenate(probs)
+
+
+class EMA:
+    """Exponential moving average of the weights, evaluated in place of the raw weights.
+    The averaged trajectory is usually a slightly better model than its last point."""
+
+    def __init__(self, model, decay):
+        self.decay = decay
+        self.shadow = {k: v.detach().clone().float()
+                       for k, v in model.state_dict().items() if v.dtype.is_floating_point}
+        self.backup = None
+
+    @torch.no_grad()
+    def update(self, model):
+        sd = model.state_dict()
+        for k, v in self.shadow.items():
+            v.mul_(self.decay).add_(sd[k].detach().float(), alpha=1.0 - self.decay)
+
+    @torch.no_grad()
+    def store_and_copy(self, model):
+        sd = model.state_dict()
+        self.backup = {k: sd[k].detach().clone() for k in self.shadow}
+        for k, v in self.shadow.items():
+            sd[k].copy_(v.to(sd[k].dtype))
+
+    @torch.no_grad()
+    def restore(self, model):
+        if self.backup is None:
+            return
+        sd = model.state_dict()
+        for k, v in self.backup.items():
+            sd[k].copy_(v)
+        self.backup = None
+
+
+def tta_predict(model, ds, device, collate, k, eval_seed=7):
+    """Average the prediction over the canonical SMILES and k enumerated rewrites of it.
+    Only the language-model branch sees the variation; fingerprints and graphs are unchanged."""
+    ps = [predict(model, ds, device, collate, eval_seed=eval_seed)]
+    was = ds.augment
+    ds.augment = True
+    try:
+        for t in range(k):
+            random.seed(eval_seed + 100 + t)
+            ps.append(predict(model, ds, device, collate, eval_seed=eval_seed + 100 + t))
+    finally:
+        ds.augment = was
+    return np.mean(ps, 0)
 
 
 def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, device,
@@ -737,6 +797,7 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
 
     best_auc, best_state, best_ep, pat = -1.0, None, 0, 0
     best_val_auc = 0.0
+    ema = EMA(model, cfg.ema) if cfg.ema else None
     history = []
     t0 = time.time()
     for ep in range(cfg.max_epochs):
@@ -770,6 +831,10 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
                 opt.step()
                 opt.zero_grad(set_to_none=True)
                 sch.step()
+                if ema is not None:
+                    ema.update(model)
+        if ema is not None:              # select and checkpoint on the averaged weights
+            ema.store_and_copy(model)
         vp = predict(model, vl_ds, device, collate, eval_seed=1000 + ep)
         auc = roc_auc_score(vl_ds.labels, vp)
         score = auc
@@ -782,8 +847,10 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
             best_state = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
         else:
             pat += 1
-            if pat >= cfg.patience:
-                break
+        if ema is not None:
+            ema.restore(model)
+        if pat >= cfg.patience:
+            break
     train_s = time.time() - t0
 
     model.load_state_dict(best_state)
@@ -792,9 +859,12 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
     if save_path:
         torch.save({"cfg": cfg.to_dict(), "state_dict": best_state, "scaler_mean": scaler.mean_,
                     "scaler_scale": scaler.scale_}, save_path)
-    out = {"val_probs": predict(model, vl_ds, device, collate, eval_seed=7), "val_labels": vl_ds.labels}
+    n_tta = cfg.tta if (cfg.tta and augment_ok) else 0
+    final = ((lambda d: tta_predict(model, d, device, collate, n_tta)) if n_tta
+             else (lambda d: predict(model, d, device, collate, eval_seed=7)))
+    out = {"val_probs": final(vl_ds), "val_labels": vl_ds.labels}
     for k, ds in ev_ds.items():
-        out[f"{k}_probs"] = predict(model, ds, device, collate, eval_seed=7)
+        out[f"{k}_probs"] = final(ds)
         out[f"{k}_labels"] = ds.labels
     out.update(best_val_auc=float(best_auc), best_epoch=best_ep, epochs_run=len(history),
                train_seconds=train_s, history=history,
