@@ -94,6 +94,10 @@ EXPERIMENTS["scaffold_blend"] = [j for v in BLEND_VARIANTS for j in
 EXPERIMENTS["scaffold_backbone"] = cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm")
 
 # V9: EMA + test-time augmentation + multi-sample dropout on the V5-MT stack, both splits
+# Screening the top-5 Optuna trials per branch on full CV, one seed
+HPO_TOPK = ['graph_mt_t1', 'graph_mt_t2', 'graph_mt_t3', 'graph_mt_t4', 'graph_mt_t5', 'reg_delta_t1', 'reg_delta_t2', 'reg_delta_t3', 'reg_delta_t4', 'reg_delta_t5']
+EXPERIMENTS["hpo_topk"] = [j for v in HPO_TOPK for j in cv_jobs([42], backbone="chemberta_mlm", variant=v)]
+
 # Full-CV confirmation of the Optuna-tuned configurations, both splits
 EXPERIMENTS["hpo_tuned"] = [j for v in ("graph_mt_hpo", "reg_delta_hpo") for j in
                             (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)
