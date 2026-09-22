@@ -51,6 +51,26 @@ test p = 0.0107, dAUC +0.0077 (p = 0.0247); scaffold OOF p = 0.0020, dAUC +0.006
 scaffold test not significant (p = 0.63). Against LightGBM alone: random OOF p = 0.0223,
 dAUC p = 0.0001.
 
+Potency numbers above use the MoleculeACE cliff protocol alongside global RMSE; 57.7 % of this
+dataset are activity-cliff compounds. Cliff RMSE: 0.6743 (random OOF) and 0.8492 (scaffold OOF).
+
+### Against published methods, run on our folds and test set
+
+| | ours | CheMeleon (Burns 2025) | Chemprop v2 (Heid 2024) |
+|---|---|---|---|
+| random OOF AUC | **0.9680** | 0.9566 | 0.9331 |
+| scaffold OOF AUC | **0.9499** | 0.9396 | 0.9027 |
+| random OOF potency RMSE | **0.6215** | 0.6349 | 0.7174 |
+| scaffold OOF potency RMSE | 0.7601 | **0.7583** | 0.8564 |
+| random OOF cliff RMSE | **0.6743** | 0.6930 | 0.7610 |
+
+Classification: we lead both comparators significantly out-of-fold (vs CheMeleon dAUC +0.0114,
+p < 1e-4 random and +0.0103, p = 0.001 scaffold; vs Chemprop +0.035 and +0.047, both p < 1e-4).
+Potency: clearly ahead of Chemprop (-0.096 RMSE, p < 1e-4 on both splits); ahead of CheMeleon on
+the random split (-0.0135, p = 0.029) and level on scaffold (+0.0018, p = 0.77). None of
+CheMeleon's test-set advantages are significant (p = 0.07 - 0.66), so on the smaller test sets
+the two systems are level.
+
 ---
 
 ## 2. Classical branch
@@ -154,7 +174,24 @@ isoform multi-task, ChEMBL-wide potency pre-training), not a layer problem. The 
 
 ---
 
-## 5. Caveats to state in any write-up
+## 5. Alternatives built, measured and NOT adopted
+
+Each was implemented and evaluated under the same protocol; each is kept in the repository so the
+decision is reproducible, and none is part of the proposed model.
+
+| alternative | result | why rejected |
+|---|---|---|
+| 9-member NNLS potency stack (`stack_potency.py`) | random OOF RMSE 0.6215 -> 0.6148, scaffold 0.7601 -> 0.7580 | 0.0067 RMSE for 85 fitted models instead of 20, plus fold-wise fitted weights that add a leakage surface to defend. The 2-member hybrid already beats CheMeleon on random OOF (p = 0.029). |
+| V10, auxiliary RDKit-descriptor head (`reg_delta_desc`) | random OOF RMSE 0.6598 vs 0.6596 baseline | no effect. CheMeleon's descriptor signal needs its 1M-molecule pretraining corpus; as an auxiliary task on 4.7k molecules it does nothing. |
+| MoLFormer-encoder potency model | 0.6583 alone, largest scaffold stack weight (0.241) | improves nothing outside the stack, and the stack is not adopted. |
+| RDKit-204 / Mordred-1325 descriptor blocks as booster features | LGBMReg random OOF 0.6373 -> 0.6585 -> 0.7045 | raw descriptors dilute the boosters. Confirms their value lies in pretraining, not as input features. |
+| Full Optuna HPO replication (40 trials per branch) | no configuration beat the inherited hyperparameters under cross-validation | the notebook's proxy objective (50 % data, 25 epochs) does not predict full-regime performance. |
+| V9: weight EMA + test-time augmentation + multi-sample dropout | random OOF AUC -0.0012; scaffold -0.0033 (p = 0.030) | no gain, slightly worse on scaffold. |
+| Uni-Mol, MoleculeACE packages | not run | their installs force numpy 2 / rdkit-pypi 2022.9.5, which would invalidate every cached feature. MoleculeACE's model suite is already covered by our baselines; its cliff protocol is implemented directly instead. |
+
+---
+
+## 6. Caveats to state in any write-up
 
 1. Hybrid membership was selected greedily on out-of-fold predictions — mild on 4,759 molecules,
    but it is a selection step.
@@ -165,8 +202,11 @@ isoform multi-task, ChEMBL-wide potency pre-training), not a layer problem. The 
 
 ---
 
-## 6. Reports
+## 7. Reports
 
+`results/external_{random,scaffold}.md` (against published methods),
+`results/moleculeace_{random,scaffold}.md` (activity-cliff protocol),
+`results/stack_potency_{random,scaffold}.md` (the stack alternative),
 `results/position_{random,scaffold}.md` (standing on both axes), `results/final_table_*.md`
 (headline ensembles), `results/metrics_all.md` (every experiment, both splits),
 `results/reg_report.md` (potency), `results/hybrid_*.md` (threshold and hybrid selection),
