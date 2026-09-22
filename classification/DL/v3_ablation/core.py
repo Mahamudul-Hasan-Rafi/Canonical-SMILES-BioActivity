@@ -846,8 +846,9 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
         ckw = dict(ckw, aux=True)
     use_reg = cfg.aux_pic50 > 0 or cfg.task == "reg" or cfg.retrieval > 0
     if use_reg:                                          # V5: measured potency, training molecules only
-        import data as _data
-        feats = dict(feats, pic50=_data.get_pic50(feats["smiles"]))
+        if "pic50" not in feats:                         # external datasets supply their own
+            import data as _data
+            feats = dict(feats, pic50=_data.get_pic50(feats["smiles"]))
         dkw = dict(dkw, pic50=True)
         ckw = dict(ckw, pic50=True)
     nbr_of = lambda idx: None
