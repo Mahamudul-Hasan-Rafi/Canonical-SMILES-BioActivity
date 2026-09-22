@@ -103,6 +103,16 @@ EXPERIMENTS["hpo_tuned"] = [j for v in ("graph_mt_hpo", "reg_delta_hpo") for j i
                             (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)
                              + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm", variant=v))]
 
+# Module / view ablations of the current deep branch: one seed, both splits.
+ABL_MODULES = ['mt_no_smiles', 'mt_no_ecfp', 'mt_no_maccs', 'mt_no_desc', 'mt_no_graph', 'mt_concat', 'mt_no_gate', 'mt_no_pic50', 'mt_fp1024']
+EXPERIMENTS["ablate_modules"] = ([j for v in ABL_MODULES for j in
+                                  cv_jobs([42], backbone="chemberta_mlm", variant=v)]
+                                 + [j for v in ABL_MODULES for j in
+                                    cv_jobs([42], split="scaffold", backbone="chemberta_mlm", variant=v)]
+                                 # the no-potency reference is missing on the scaffold split
+                                 + cv_jobs([42], split="scaffold", backbone="chemberta_mlm",
+                                           variant="graph_branch"))
+
 # V10: descriptor-supervised potency model, both splits
 EXPERIMENTS["reg_desc"] = (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant="reg_delta_desc")
                            + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm",
