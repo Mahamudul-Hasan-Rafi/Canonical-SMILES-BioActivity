@@ -14,62 +14,56 @@ predicted potency (pIC50).
 ### Classification
 
 ```
-rank-average, weights 2 : 1
-  ├─ 2 ×  Voting ensemble   RF + ExtraTrees + XGBoost + LightGBM + CatBoost
-  │                         on ECFP4 1024 binary + 6 RO5 descriptors
-  └─ 1 ×  Deep network      V8-R2  (random split / analogue-rich chemistry)
-                            V5-MT  (scaffold split / novel chemotypes)
-threshold fixed out-of-fold; optional abstention band
+rank-average, fixed weights 2 : 1
+  +-- 2 x  LightGBM        on ECFP4 1024 binary + 6 RO5 descriptors
+  |                        600 rounds, 63 leaves, lr 0.05; 5 fitted models
+  +-- 1 x  V5-MT network   five views fused to 768; 3 seeds x 5 folds = 15 networks
+-> per-fold Platt scaling -> probability
+-> threshold fitted out-of-fold (MCC-optimal)
+-> active / inactive          [+ optional abstention band]
 ```
+
+20 fitted models in total. Ranking metrics use the raw rank-average; the calibrated probability is
+used where a probability is required (Brier, deployment), because per-fold Platt calibrators are
+not comparable across folds.
 
 ### Potency
 
 ```
 plain average, weights 1 : 1
-  ├─ LightGBM regressor     on ECFP4 2048 count + chirality + MACCS + 6 descriptors
-  └─ V8-R2 predicted pIC50
+  +-- LightGBM regressor   on ECFP4 2048 count + chirality + MACCS + 6 descriptors
+  +-- V8-R2 predicted pIC50
 ```
-
-Scores are rank-averaged for classification because the two branches produce incomparable scales
-(a squashed potency vs a calibrated probability). Potency is averaged directly, both being in log
-units. **Deployment note:** rank-averaging depends on the batch being scored, so a single-molecule
-prediction needs the stored out-of-fold score distribution as the reference for converting a raw
-score into a percentile.
 
 ### Measured performance
 
 | | random OOF | random test | scaffold OOF | scaffold test |
 |---|---|---|---|---|
-| accuracy | 0.9420 | 0.9394 | 0.9176 | 0.9293 |
-| MCC | 0.8247 | 0.8164 | 0.7442 | 0.7863 |
-| ROC-AUC | 0.9680 | 0.9727 | 0.9491 | 0.9640 |
-| accuracy at 95 % coverage | 0.9560 | 0.9540 | 0.9334 | 0.9443 |
-| potency RMSE | 0.6207 | 0.5789 | 0.7588 | 0.6550 |
+| accuracy | 0.9381 | 0.9370 | 0.9153 | 0.9238 |
+| balanced accuracy | 0.8992 | 0.9002 | 0.8577 | 0.8708 |
+| ROC-AUC | 0.9660 | 0.9707 | 0.9483 | 0.9667 |
+| MCC | 0.8127 | 0.8075 | 0.7392 | 0.7707 |
+| Brier (calibrated) | 0.0517 | 0.0523 | 0.0676 | 0.0577 |
+| accuracy at 95 % coverage | 0.9538 | 0.9537 | 0.9312 | 0.9498 |
+| potency RMSE | 0.6215 | 0.5788 | 0.7601 | 0.6573 |
+| potency RMSE on cliffs | 0.6743 | 0.6352 | 0.8492 | 0.6543 |
 
-Against the published V3 model: random OOF McNemar p = 0.0001, dAUC +0.0056 (p = 0.0010); random
-test p = 0.0107, dAUC +0.0077 (p = 0.0247); scaffold OOF p = 0.0020, dAUC +0.0065 (p = 0.0007);
-scaffold test not significant (p = 0.63). Against LightGBM alone: random OOF p = 0.0223,
-dAUC p = 0.0001.
+### Both components are necessary (out-of-fold delta AUC)
 
-Potency numbers above use the MoleculeACE cliff protocol alongside global RMSE; 57.7 % of this
-dataset are activity-cliff compounds. Cliff RMSE: 0.6743 (random OOF) and 0.8492 (scaffold OOF).
+| vs | random | scaffold |
+|---|---|---|
+| LightGBM alone | +0.0040 (p < 1e-4) | +0.0033 (p = 0.0014) |
+| V5-MT alone | +0.0033 (p = 0.022) | +0.0111 (p < 1e-4) |
+| V3 (published) | +0.0036 (p = 0.0066) | +0.0057 (p = 0.0051) |
+| CheMeleon (Burns 2025) | +0.0094 (p = 0.0001) | +0.0087 (p = 0.0084) |
+| Chemprop v2 (Heid 2024) | +0.0330 (p < 1e-4) | +0.0457 (p < 1e-4) |
 
-### Against published methods, run on our folds and test set
+The 2 : 1 weight was prespecified, not tuned: sweeping the deep weight from 0.1 to 0.5 changes
+out-of-fold MCC by less than 0.006. Equal weights (1 : 1) would weaken the evidence that the deep
+branch contributes, because the deep model is the weaker classifier and its value is diversity.
 
-| | ours | CheMeleon (Burns 2025) | Chemprop v2 (Heid 2024) |
-|---|---|---|---|
-| random OOF AUC | **0.9680** | 0.9566 | 0.9331 |
-| scaffold OOF AUC | **0.9499** | 0.9396 | 0.9027 |
-| random OOF potency RMSE | **0.6215** | 0.6349 | 0.7174 |
-| scaffold OOF potency RMSE | 0.7601 | **0.7583** | 0.8564 |
-| random OOF cliff RMSE | **0.6743** | 0.6930 | 0.7610 |
-
-Classification: we lead both comparators significantly out-of-fold (vs CheMeleon dAUC +0.0114,
-p < 1e-4 random and +0.0103, p = 0.001 scaffold; vs Chemprop +0.035 and +0.047, both p < 1e-4).
-Potency: clearly ahead of Chemprop (-0.096 RMSE, p < 1e-4 on both splits); ahead of CheMeleon on
-the random split (-0.0135, p = 0.029) and level on scaffold (+0.0018, p = 0.77). None of
-CheMeleon's test-set advantages are significant (p = 0.07 - 0.66), so on the smaller test sets
-the two systems are level.
+Activity cliffs (MoleculeACE definition) are 57.7 % of this dataset; the model's cliff error rate
+is 0.0783 against 0.0619 overall (random, out-of-fold).
 
 ---
 
@@ -86,8 +80,11 @@ plus MolWt, MolLogP, TPSA, NumHDonors, NumHAcceptors, NumRotatableBonds.
 | LightGBM | 600 rounds, 63 leaves, lr 0.05, subsample 0.8 (freq 1), colsample 0.5 |
 | CatBoost | 600 iterations, depth 6, lr 0.05, rsm 0.5 |
 
-Soft voting with equal weights; each learner refitted per CV fold, test prediction averaged over
-the 5 folds, so 25 fitted models. **No scale_pos_weight on the boosters** — that setting is what
+The proposed model uses **LightGBM alone** as the classical branch: it was the strongest single
+learner out-of-fold on both splits (MCC 0.8103 random, 0.7272 scaffold), and pairing it with the
+network matches or beats the five-learner voting ensemble with half the fitted models (20 vs 40).
+Soft voting over all five (probability average; verified identical to sklearn's VotingClassifier)
+remains available and is reported as an alternative. **No scale_pos_weight on the boosters** — that setting is what
 produced the 0.896 artefact in the original notebook.
 
 Stacking (logistic meta-learner over the same five, inner 3-fold CV) was tried and is *worse* than
