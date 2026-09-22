@@ -67,6 +67,19 @@ def ensembles(n_jobs):
     }
 
 
+
+def impute(X_tr, *others):
+    """Median of the training fold, applied to every block; all-NaN columns become zero.
+    Nothing from the evaluation fold or the test set enters the statistic."""
+    if np.isfinite(X_tr).all() and all(np.isfinite(o).all() for o in others):
+        return (X_tr,) + others
+    med = np.nanmedian(np.where(np.isfinite(X_tr), X_tr, np.nan), axis=0)
+    med = np.where(np.isfinite(med), med, 0.0)
+
+    def fill(X):
+        return np.ascontiguousarray(np.where(np.isfinite(X), X, med[None, :]), dtype=np.float32)
+    return (fill(X_tr),) + tuple(fill(o) for o in others)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-jobs", type=int, default=6)
@@ -92,6 +105,15 @@ def main():
         # V4 fingerprint: count-based Morgan r2, 2048 bits, chirality (log1p counts)
         "ECFPc2048+MACCS+Desc": np.hstack([fp2, feats["maccs"], feats["desc_raw"]]),
     }
+    if args.sets and any(x in args.sets for x in ("RDKit", "Mordred")):
+        import descriptors_ext
+        smiles = list(feats["smiles"])
+        rd, _ = descriptors_ext.get_rdkit(smiles)
+        feature_sets["ECFPc2048+MACCS+RDKit"] = np.hstack([fp2, feats["maccs"], rd])
+        feature_sets["RDKit"] = rd
+        mo, _ = descriptors_ext.get_mordred(smiles)
+        feature_sets["ECFPc2048+MACCS+Mordred"] = np.hstack([fp2, feats["maccs"], mo])
+        feature_sets["Mordred"] = mo
     if args.sets:
         want = [x.strip() for x in args.sets.split(",")]
         feature_sets = {k: v for k, v in feature_sets.items() if k in want}
@@ -110,9 +132,10 @@ def main():
             test_probs = []
             for f_tr, f_vl in folds:
                 clf = make()
-                clf.fit(X[dev_idx[f_tr]], y[dev_idx[f_tr]])
-                oof[f_vl] = clf.predict_proba(X[dev_idx[f_vl]])[:, 1]
-                test_probs.append(clf.predict_proba(X[te])[:, 1])
+                Xtr, Xvl, Xte = impute(X[dev_idx[f_tr]], X[dev_idx[f_vl]], X[te])
+                clf.fit(Xtr, y[dev_idx[f_tr]])
+                oof[f_vl] = clf.predict_proba(Xvl)[:, 1]
+                test_probs.append(clf.predict_proba(Xte)[:, 1])
             np.savez(path, oof=oof, oof_labels=y[dev_idx], test_probs=np.stack(test_probs),
                      test_labels=y[te], dev_idx=dev_idx, test_idx=te)
             from sklearn.metrics import roc_auc_score
@@ -132,9 +155,10 @@ def main():
             test_probs = []
             for f_tr, f_vl in folds:
                 clf = make()
-                clf.fit(X[dev_idx[f_tr]], y[dev_idx[f_tr]])
-                oof[f_vl] = clf.predict_proba(X[dev_idx[f_vl]])[:, 1]
-                test_probs.append(clf.predict_proba(X[te])[:, 1])
+                Xtr, Xvl, Xte = impute(X[dev_idx[f_tr]], X[dev_idx[f_vl]], X[te])
+                clf.fit(Xtr, y[dev_idx[f_tr]])
+                oof[f_vl] = clf.predict_proba(Xvl)[:, 1]
+                test_probs.append(clf.predict_proba(Xte)[:, 1])
             np.savez(path, oof=oof, oof_labels=y[dev_idx], test_probs=np.stack(test_probs),
                      test_labels=y[te], dev_idx=dev_idx, test_idx=te)
             from sklearn.metrics import roc_auc_score
@@ -172,8 +196,9 @@ def main():
             oof_pic = np.zeros(len(dev_idx), np.float32)
             test_probs, test_pic = [], []
             for f_tr, f_vl in folds:
-                reg = make().fit(X[dev_idx[f_tr]], pic_all[dev_idx[f_tr]])
-                pv, pt = reg.predict(X[dev_idx[f_vl]]), reg.predict(X[te])
+                Xtr, Xvl, Xte = impute(X[dev_idx[f_tr]], X[dev_idx[f_vl]], X[te])
+                reg = make().fit(Xtr, pic_all[dev_idx[f_tr]])
+                pv, pt = reg.predict(Xvl), reg.predict(Xte)
                 oof[f_vl], oof_pic[f_vl] = sig(pv), pv
                 test_probs.append(sig(pt))
                 test_pic.append(pt)
