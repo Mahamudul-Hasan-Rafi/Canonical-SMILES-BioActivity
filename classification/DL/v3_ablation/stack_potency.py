@@ -57,7 +57,9 @@ def main():
     for nm, kw in (("V5-REG", dict(backbone="chemberta_mlm", variant="graph_reg")),
                    ("V8-R1", dict(backbone="chemberta_mlm", variant="reg_first")),
                    ("V8-R2", dict(backbone="chemberta_mlm", variant="reg_first_delta")),
-                   ("V8-R2-hpo", dict(backbone="chemberta_mlm", variant="reg_delta_hpo"))):
+                   ("V8-R2-hpo", dict(backbone="chemberta_mlm", variant="reg_delta_hpo")),
+                   ("V8-R2-molformer", dict(backbone="molformer", variant="reg_first_delta")),
+                   ("V10-desc", dict(backbone="chemberta_mlm", variant="reg_delta_desc"))):
         rr = [r for r in (st.cv(split=sp, seed=s, **kw) for s in R.SEEDS) if r is not None]
         if rr:
             members[nm] = (core.probs_to_pic50(np.mean([r["oof"] for r in rr], 0)),
