@@ -103,6 +103,16 @@ EXPERIMENTS["hpo_tuned"] = [j for v in ("graph_mt_hpo", "reg_delta_hpo") for j i
                             (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)
                              + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm", variant=v))]
 
+# V10: descriptor-supervised potency model, both splits
+EXPERIMENTS["reg_desc"] = (cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant="reg_delta_desc")
+                           + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="chemberta_mlm",
+                                     variant="reg_delta_desc"))
+
+# Potency diversity: the regression-first stack with the MoLFormer encoder instead of ChemBERTa
+EXPERIMENTS["reg_molformer"] = (cv_jobs(REPRO_SEEDS, backbone="molformer", variant="reg_first_delta")
+                                + cv_jobs(REPRO_SEEDS, split="scaffold", backbone="molformer",
+                                          variant="reg_first_delta"))
+
 # Confirmation of the probe-selected learning rate, both deep variants, random split
 EXPERIMENTS["hpo_confirm"] = [j for v in ("graph_mt_lr4", "reg_delta_lr4") for j in
                               cv_jobs(REPRO_SEEDS, backbone="chemberta_mlm", variant=v)]
