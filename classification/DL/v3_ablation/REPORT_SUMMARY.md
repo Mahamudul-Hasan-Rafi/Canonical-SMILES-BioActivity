@@ -74,35 +74,80 @@ potency at inference.
 |---|---|---|
 | vs **LightGBM alone** | +0.0046 (**p < 1e-4**) | +0.0030 (**p = 0.0050**) |
 | vs **V11c alone** | +0.0040 (**p = 0.0123**) | +0.0135 (**p < 1e-4**) |
-| vs **V3 (published)** | +0.0042 (**p = 0.0023**) | +0.0055 (**p = 0.0125**) |
-| vs **CheMeleon** (Burns 2025) | +0.0100 (**p < 1e-4**) | +0.0085 (**p = 0.0138**) |
-| vs **Chemprop v2** (Heid 2024) | +0.0335 (**p < 1e-4**) | +0.0454 (**p < 1e-4**) |
+| vs **V3 (published baseline)** | +0.0042 (**p = 0.0023**) | +0.0055 (**p = 0.0125**) |
 
-McNemar on per-molecule errors, out-of-fold: vs V3 p = 0.0050 (random) and 0.0350 (scaffold);
-vs CheMeleon p = 0.0150 (random); vs Chemprop p < 1e-4 (both).
+McNemar on per-molecule errors, out-of-fold, vs V3: p = 0.0177 (random), p = 0.0570 (scaffold).
 
-Both components are necessary: the combination significantly outperforms **each of its own parts**
-on both splits.
+The combination significantly outperforms **each of its own parts** on both splits: neither the
+gradient-boosting model nor the network is sufficient alone.
 
 ---
 
-## 4. Against published methods (their implementations, our folds, 3 seeds)
+## 4. Against established methods
 
-| | ours | CheMeleon | Chemprop |
+### 4.1 Chemprop v2 (Heid et al., JCIM 2024) - run with the authors' implementation on our folds
+
+| | ours | Chemprop v2 |
+|---|---|---|
+| random OOF AUC | **0.9666** | 0.9331 |
+| random OOF MCC | **0.8129** | 0.7412 |
+| scaffold OOF AUC | **0.9481** | 0.9027 |
+| scaffold OOF MCC | **0.7382** | 0.6668 |
+| random OOF potency RMSE | **0.6373** | 0.7174 |
+| scaffold OOF potency RMSE | **0.7880** | 0.8564 |
+
+Classification: dAUC **+0.0335 (p < 1e-4)** random and **+0.0454 (p < 1e-4)** scaffold.
+Potency: **-0.08 to -0.09 RMSE, p < 1e-4** on both splits. Chemprop, the field-standard
+directed-message-passing baseline, is not competitive on this dataset.
+
+### 4.2 Published HDAC models (different datasets - context, not a controlled comparison)
+
+| study | task | reported | ours |
 |---|---|---|---|
-| random OOF AUC | **0.9666** | 0.9566 | 0.9331 |
-| scaffold OOF AUC | **0.9481** | 0.9396 | 0.9027 |
-| random OOF potency RMSE (LightGBM regressor) | 0.6373 | **0.6349** | 0.7174 |
-| scaffold OOF potency RMSE | 0.7880 | **0.7583** | 0.8564 |
+| HDAC1, XGBoost + ECFP4, 7,313 compounds (PubMed 35737257) | classification | accuracy 0.8808, MCC 0.76 | 0.9375 / 0.8129 (random OOF) |
+| HDAC6, ensemble incl. XGBoost, 1,701 compounds | classification | accuracy 0.9069, AUC 0.9493 | 0.9375 / 0.9666 |
+| HDAC family, transformer-pretrained features (2024) | classification | accuracy 0.88 - 0.91 | 0.9375 |
 
-Classification is a clear win on both splits. **Potency is not**: the proposed system's regressor
-(0.6373 random, 0.7880 scaffold) is level with CheMeleon on the random split and behind it on
-scaffold, though both are far ahead of Chemprop. Adding V8-R2 as a potency-only component would
-give 0.6215 / 0.7601 - ahead on random, level on scaffold - at the cost of a third network that
-reads training analogues at inference. That trade is documented, not taken.
+These use different curations, activity thresholds and splitting schemes (the HDAC1 study used a
+Kohonen self-organising-map split, which is harder than a random split), so the comparison bounds
+the published range rather than ranking methods. Our scaffold-split result (0.9149 accuracy,
+0 % scaffold overlap with training) is the conservative number to quote against them.
 
-Classical baselines on the same folds, nested CV: SVM 0.9427 OOF AUC, Tanimoto k-NN 0.9240,
-k-NN (cosine) 0.9099 on the random split.
+### 4.3 Classical baselines on our folds (nested CV where tuned)
+
+| model | random OOF AUC | random OOF MCC | scaffold OOF AUC |
+|---|---|---|---|
+| Voting (RF+ET+XGB+LGBM+Cat) | 0.9648 | 0.8123 | 0.9479 |
+| LightGBM | 0.9621 | 0.8103 | 0.9451 |
+| XGBoost | 0.9601 | 0.7965 | 0.9413 |
+| Random Forest | 0.9627 | 0.7946 | 0.9445 |
+| SVM (RBF, nested CV) | 0.9427 | 0.7464 | 0.9103 |
+| k-NN (Tanimoto) | 0.9240 | 0.7287 | 0.8923 |
+
+Gradient boosting on fingerprints is a strong baseline on this task - stronger than several deep
+models - which is why the proposed system keeps it as its main component.
+
+### 4.4 Preprint comparator: CheMeleon (Burns & Green, 2025, arXiv)
+
+Not counted as established state of the art, but run under the same protocol and reported for
+completeness, with an important qualification.
+
+| | ours | CheMeleon classifier | CheMeleon regressor, thresholded |
+|---|---|---|---|
+| random OOF AUC | **0.9666** | 0.9566 | 0.9592 |
+| random OOF MCC | 0.8129 | 0.7925 | 0.8118 |
+| scaffold OOF AUC | **0.9481** | 0.9396 | 0.9382 |
+| scaffold OOF MCC | 0.7382 | 0.7293 | **0.7415** |
+| scaffold test errors | 55 | 65 | **44** |
+
+**We are significantly better on ranking** against both configurations (dAUC +0.0074, p = 0.012
+random; +0.0099, p = 0.0038 scaffold). **On thresholded metrics we are level** with its regression
+model (McNemar p = 0.83 random, p = 1.00 scaffold) and it is better on the scaffold test set
+(44 errors vs 55, p = 0.12, not significant). On potency it is level on random (0.6349 vs our
+0.6373) and ahead on scaffold (0.7583 vs 0.7880).
+
+The claim to make is therefore about **ranking**, not about accuracy, whenever this model is in
+scope.
 
 ---
 
@@ -164,10 +209,10 @@ same finding on the earlier MoLFormer stack. The D-MPNN branch contributes nothi
 1. The proposed model significantly outperforms the published V3 model out-of-fold on both splits.
 2. It significantly outperforms each of its own components — LightGBM alone and V11c alone — on
    both splits.
-3. It significantly outperforms Chemprop v2 and CheMeleon on classification, out-of-fold, on both
-   splits, with their authors' implementations run on our folds.
-4. On potency it is level with CheMeleon on the random split and behind it on scaffold; both are
-   far ahead of Chemprop.
+3. It significantly outperforms Chemprop v2 (JCIM 2024) on classification and potency, out-of-fold,
+   on both splits, using the authors' own implementation on our folds.
+4. Against the CheMeleon preprint it is significantly better on ranking (AUC) on both splits but
+   only level on thresholded metrics, and behind on scaffold potency.
 5. 95 % accuracy is achievable through selective prediction: 95.4 % at 95 % coverage (random).
 6. Classification accuracy is bounded by potency precision; the label ceiling is 99.6 %.
 7. The attention-based fusion contributes nothing measurable; performance comes from multi-view
