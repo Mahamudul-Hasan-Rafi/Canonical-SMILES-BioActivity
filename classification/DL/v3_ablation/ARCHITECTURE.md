@@ -11,59 +11,66 @@ predicted potency (pIC50).
 
 ## 1. Final configuration (what to present and deploy)
 
+Two model families, four fitted heads, **no retrieval module anywhere** and nothing that reads
+another molecule's measured potency at prediction time.
+
 ### Classification
 
 ```
 rank-average, fixed weights 2 : 1
-  +-- 2 x  LightGBM        on ECFP4 1024 binary + 6 RO5 descriptors
-  |                        600 rounds, 63 leaves, lr 0.05; 5 fitted models
-  +-- 1 x  V5-MT network   five views fused to 768; 3 seeds x 5 folds = 15 networks
+  +-- 2 x  LightGBM classifier   ECFP4 1024 binary + 6 RO5 descriptors; 5 fitted models
+  +-- 1 x  V11c network          five views -> 768, balanced multi-task, no retrieval
+                                 3 seeds x 5 folds = 15 networks
 -> per-fold Platt scaling -> probability
 -> threshold fitted out-of-fold (MCC-optimal)
--> active / inactive          [+ optional abstention band]
+-> active / inactive            [+ optional abstention band]
 ```
-
-20 fitted models in total. Ranking metrics use the raw rank-average; the calibrated probability is
-used where a probability is required (Brier, deployment), because per-fold Platt calibrators are
-not comparable across folds.
 
 ### Potency
 
 ```
-plain average, weights 1 : 1
-  +-- LightGBM regressor   on ECFP4 2048 count + chirality + MACCS + 6 descriptors
-  +-- V8-R2 predicted pIC50
+LightGBM regressor   ECFP4 2048 count + chirality + MACCS + 6 descriptors
+                     (V11c's own potency head is reported as a secondary deep estimate)
 ```
+
+**V11c** is V5-MT with the potency loss trained at weight 1.0 instead of 0.1 and the class sampler
+removed. That change is free: classification is unchanged (random OOF AUC 0.9626 vs 0.9628) while
+the potency head improves from RMSE 0.8051 to 0.7429, and the design is simply "both tasks trained
+at equal weight".
 
 ### Measured performance
 
 | | random OOF | random test | scaffold OOF | scaffold test |
 |---|---|---|---|---|
-| accuracy | 0.9381 | 0.9370 | 0.9153 | 0.9238 |
-| balanced accuracy | 0.8992 | 0.9002 | 0.8577 | 0.8708 |
-| ROC-AUC | 0.9660 | 0.9707 | 0.9483 | 0.9667 |
-| MCC | 0.8127 | 0.8075 | 0.7392 | 0.7707 |
-| Brier (calibrated) | 0.0517 | 0.0523 | 0.0676 | 0.0577 |
-| accuracy at 95 % coverage | 0.9538 | 0.9537 | 0.9312 | 0.9498 |
-| potency RMSE | 0.6215 | 0.5788 | 0.7601 | 0.6573 |
-| potency RMSE on cliffs | 0.6743 | 0.6352 | 0.8492 | 0.6543 |
+| accuracy | 0.9375 | 0.9370 | 0.9149 | 0.9252 |
+| balanced accuracy | 0.9046 | 0.9045 | 0.8578 | 0.8716 |
+| ROC-AUC | 0.9666 | 0.9722 | 0.9481 | 0.9687 |
+| MCC | 0.8129 | 0.8090 | 0.7382 | 0.7746 |
+| Brier (calibrated) | 0.0512 | 0.0511 | 0.0677 | 0.0565 |
+| errors | 292 | 52 | 405 | 55 |
+| accuracy at 95 % coverage | 0.9549 | 0.9551 | 0.9317 | 0.9511 |
+| potency RMSE (LightGBM regressor) | 0.6373 | 0.5934 | 0.7880 | 0.6479 |
+| potency RMSE (V11c head) | 0.7429 | 0.6800 | 0.8606 | 0.7846 |
 
 ### Both components are necessary (out-of-fold delta AUC)
 
 | vs | random | scaffold |
 |---|---|---|
-| LightGBM alone | +0.0040 (p < 1e-4) | +0.0033 (p = 0.0014) |
-| V5-MT alone | +0.0033 (p = 0.022) | +0.0111 (p < 1e-4) |
-| V3 (published) | +0.0036 (p = 0.0066) | +0.0057 (p = 0.0051) |
-| CheMeleon (Burns 2025) | +0.0094 (p = 0.0001) | +0.0087 (p = 0.0084) |
-| Chemprop v2 (Heid 2024) | +0.0330 (p < 1e-4) | +0.0457 (p < 1e-4) |
+| LightGBM alone | +0.0046 (p < 1e-4) | +0.0030 (p = 0.0050) |
+| V11c alone | +0.0040 (p = 0.0123) | +0.0135 (p < 1e-4) |
+| V3 (published) | +0.0042 (p = 0.0023) | +0.0055 (p = 0.0125) |
+| CheMeleon (Burns 2025) | +0.0100 (p < 1e-4) | +0.0085 (p = 0.0138) |
+| Chemprop v2 (Heid 2024) | +0.0335 (p < 1e-4) | +0.0454 (p < 1e-4) |
 
 The 2 : 1 weight was prespecified, not tuned: sweeping the deep weight from 0.1 to 0.5 changes
-out-of-fold MCC by less than 0.006. Equal weights (1 : 1) would weaken the evidence that the deep
-branch contributes, because the deep model is the weaker classifier and its value is diversity.
+out-of-fold MCC by less than 0.006.
 
-Activity cliffs (MoleculeACE definition) are 57.7 % of this dataset; the model's cliff error rate
-is 0.0783 against 0.0619 overall (random, out-of-fold).
+### Alternative for potency
+
+Adding V8-R2 - a second network trained potency-first with a neighbour-retrieval module - and
+averaging it 1 : 1 with the LightGBM regressor improves potency to 0.6215 (random OOF) and 0.7601
+(scaffold). It is not part of the proposed system because it reads the measured pIC50 of retrieved
+training analogues at inference, and because it adds a third network for a 0.016 RMSE gain.
 
 ---
 
@@ -124,9 +131,12 @@ Heads: classifier 768-256-128-1, and a potency head 768-256-1 whose output maps 
 
 Two deep variants are used:
 
-* **V5-MT** — classification-trained, 0.1-weighted auxiliary potency head. Used on novel chemotypes.
-* **V8-R2** — potency-first: Huber loss on pIC50, **no class sampler**, early stopping on validation
-  RMSE, plus the neighbour-anchored delta. Used where analogues exist.
+* **V11c** (proposed) — classification and potency trained at equal weight, no class sampler, no
+  retrieval. Used for both splits.
+* **V5-MT** — the earlier form, potency head at weight 0.1. Superseded by V11c, which matches its
+  classification and predicts potency far better.
+* **V8-R2** — potency-first with the neighbour-anchored retrieval module. Kept as a documented
+  alternative for the potency task only.
 
 Training: AdamW, LLRD 0.95, from-scratch modules at 10x base LR, lr 9.8917e-6, weight decay
 2.1248e-5, warmup then cosine, batch 32, gradient accumulation 2, seeded SMILES augmentation, max

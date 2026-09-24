@@ -56,10 +56,10 @@ def main():
         rr = [r for r in (st.cv(split=sp, seed=s, backbone=backbone, variant=variant) for s in R.SEEDS) if r]
         return (np.mean([r["oof"] for r in rr], 0), np.mean([r["ens"] for r in rr], 0)) if rr else None
 
-    ref_name = "PROPOSED: LightGBM + V5-MT (2:1)"
+    ref_name = "PROPOSED: LightGBM + V11c (2:1)"
     z = npz("LightGBM__ECFP+Desc")
     LG = (z["oof"], z["test_probs"].mean(0))
-    V5 = deep("graph_mt")
+    V5 = deep("mt_w10_ns")            # V11c: balanced multi-task, no retrieval
     FINAL = ((1 - W_DEEP) * rankdata(LG[0]) / len(y) + W_DEEP * rankdata(V5[0]) / len(y),
              (1 - W_DEEP) * rankdata(LG[1]) / len(yt) + W_DEEP * rankdata(V5[1]) / len(yt))
 
@@ -81,9 +81,10 @@ def main():
     # mixing calibrated scores across folds would perturb the global out-of-fold ranking. The
     # calibrated probabilities are used only where a probability is required (Brier, deployment).
 
-    models = {"PROPOSED: LightGBM + V5-MT (2:1)": FINAL,
+    models = {ref_name: FINAL,
               "LightGBM alone": LG,
-              "V5-MT alone": V5,
+              "V11c alone": V5,
+              "V5-MT alone (aux 0.1)": deep("graph_mt"),
               "V3 (published)": deep("full", backbone="molformer")}
     for nm, f in (("CheMeleon [Burns 2025]", "CheMeleon__graph"), ("Chemprop [Heid 2024]", "Chemprop__graph")):
         zz = npz(f)
@@ -94,7 +95,8 @@ def main():
 
     L = [f"# Proposed model — {sp} split\n",
          "**Classification** rank-average of LightGBM (ECFP4 1024 binary + 6 RO5 descriptors) and the "
-         "V5-MT multi-view network, fixed weights 2 : 1, converted to probabilities by per-fold Platt "
+         "V11c multi-view network (balanced multi-task, no retrieval), fixed weights 2 : 1, "
+         "converted to probabilities by per-fold Platt "
          "scaling. Threshold fitted out-of-fold (MCC-optimal). "
          f"20 fitted models. Development {len(dev):,} molecules, held-out test {len(te)}.\n",
          "## Classification\n",
@@ -113,7 +115,7 @@ def main():
     ref = ref_name
     L += ["", "## Does each component earn its place?\n",
           "| comparison | set | McNemar b / c | p | delta AUC | p |", "|---|---|---|---|---|---|"]
-    for other in ("LightGBM alone", "V5-MT alone", "V3 (published)",
+    for other in ("LightGBM alone", "V11c alone", "V5-MT alone (aux 0.1)", "V3 (published)",
                   "CheMeleon [Burns 2025]", "Chemprop [Heid 2024]"):
         if other not in models:
             continue
@@ -143,12 +145,28 @@ def main():
     zz = npz("LGBMReg__ECFPc2048+MACCS+Desc")
     if zz is not None:
         pot["LightGBM regressor"] = (zz["oof_pic50"], zz["test_pic50"].mean(0))
+    import experiments as _E
+    try:
+        oofp = np.zeros(len(dev)); tests = []
+        pos = {int(v): k for k, v in enumerate(dev)}
+        for sd in R.SEEDS:
+            t = []
+            for f in range(5):
+                zz = np.load(os.path.join(R.RES, "store",
+                                          _E.job_id(_E.job("cv", sp, "chemberta_mlm", "tuned",
+                                                           "mt_w10_ns", sd, f)) + ".npz"))
+                oofp[[pos[int(i)] for i in zz["val_idx"]]] = zz["val_pic50"]
+                t.append(zz["test_pic50"])
+            tests.append(np.mean(t, 0))
+        pot["V11c potency head"] = (oofp, np.mean(tests, 0))
+    except Exception:
+        pass
     r8 = deep("reg_first_delta")
     if r8:
-        pot["V8-R2 (deep)"] = (core.probs_to_pic50(r8[0]), core.probs_to_pic50(r8[1]))
-    if len(pot) == 2:
-        pot["POTENCY: LightGBM-reg + V8-R2 (1:1)"] = tuple(np.mean([pot["LightGBM regressor"][i],
-                                                                    pot["V8-R2 (deep)"][i]], 0) for i in (0, 1))
+        pot["V8-R2 (deep, alternative)"] = (core.probs_to_pic50(r8[0]), core.probs_to_pic50(r8[1]))
+    if "LightGBM regressor" in pot and "V8-R2 (deep, alternative)" in pot:
+        pot["LightGBM-reg + V8-R2 (alternative)"] = tuple(
+            np.mean([pot["LightGBM regressor"][i], pot["V8-R2 (deep, alternative)"][i]], 0) for i in (0, 1))
     for nm, f in (("CheMeleon-reg [Burns 2025]", "CheMeleon-reg__graph"),
                   ("Chemprop-reg [Heid 2024]", "Chemprop-reg__graph")):
         zz = npz(f)

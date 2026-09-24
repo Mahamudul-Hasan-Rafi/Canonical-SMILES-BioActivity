@@ -17,26 +17,27 @@ Median maximum Tanimoto of a test molecule to the training set: 0.806 (random), 
 
 **Classification** — rank-average, fixed weights 2 : 1
 
-* 2 x **LightGBM** on ECFP4 1024 binary + 6 RO5 descriptors (600 rounds, 63 leaves, lr 0.05),
-  refitted per fold: 5 fitted models
-* 1 x **V5-MT**, the multi-view network, 3 seeds x 5 folds: 15 networks
+* 2 x **LightGBM classifier** on ECFP4 1024 binary + 6 RO5 descriptors, refitted per fold: 5 models
+* 1 x **V11c network**, 3 seeds x 5 folds: 15 networks
 
-20 fitted models in total. The score is converted to a probability by per-fold Platt scaling
-(fitted on the other four folds); the decision threshold is fitted out-of-fold (MCC-optimal).
-Ranking metrics use the raw rank-average, since per-fold calibrators are not comparable across
-folds.
+Score converted to a probability by per-fold Platt scaling; decision threshold fitted out-of-fold
+(MCC-optimal). Ranking metrics use the raw rank-average, since per-fold calibrators are not
+comparable across folds. 20 fitted models in total.
 
-**Potency** — 1 : 1 average of a LightGBM regressor (ECFP4 2048 count/chirality + MACCS +
-6 descriptors) and the V8-R2 network's predicted pIC50.
+**Potency** — **LightGBM regressor** on ECFP4 2048 count/chirality + MACCS + 6 descriptors, with
+V11c's own potency head reported as a secondary deep estimate.
 
-### V5-MT
+### V11c
 
 Five views fused to 768 dimensions: ChemBERTa-77M-MLM (bottom 4 layers frozen, weighted sum of the
 top 4, CLS+mean+attention pooling), count/chirality ECFP4 2048 with 10 % feature dropout, a D-MPNN
 graph encoder, MACCS 167, and 6 RO5 descriptors; modality-type embeddings, a 2-layer cross-modal
-Transformer, a per-modality gate, concatenation to 768. A classifier head gives the decision; an
-auxiliary head predicts pIC50 with loss weight 0.1. **pIC50 is a training target only — it is
-excluded from the model inputs by construction and is not required at prediction time.**
+Transformer, a per-modality gate, concatenation to 768. Two heads - classification and pIC50 -
+trained at **equal weight**, with no class sampler and **no retrieval module**.
+
+pIC50 is a training target only: it is excluded from the model inputs by construction and is not
+required at prediction time. Nothing in the proposed system reads another molecule's measured
+potency at inference.
 
 ---
 
@@ -44,26 +45,26 @@ excluded from the model inputs by construction and is not required at prediction
 
 | | random OOF | random test | scaffold OOF | scaffold test |
 |---|---|---|---|---|
-| accuracy | 0.9381 | 0.9370 | 0.9153 | 0.9238 |
-| balanced accuracy | 0.8992 | 0.9002 | 0.8577 | 0.8708 |
-| precision / recall | 0.9548 / 0.9671 | 0.9574 / 0.9632 | 0.9364 / 0.9576 | 0.9390 / 0.9652 |
-| specificity | 0.8313 | 0.8372 | 0.7577 | 0.7764 |
-| F1 | 0.9609 | 0.9603 | 0.9469 | 0.9519 |
-| ROC-AUC | 0.9660 | 0.9707 | 0.9483 | 0.9667 |
-| AUPRC | 0.9881 | 0.9920 | 0.9830 | 0.9900 |
-| MCC | 0.8127 | 0.8075 | 0.7392 | 0.7707 |
-| Brier (calibrated) | 0.0517 | 0.0523 | 0.0676 | 0.0577 |
-| errors | 289 | 52 | 403 | 56 |
-| potency RMSE | 0.6215 | 0.5788 | 0.7601 | 0.6573 |
+| accuracy | 0.9375 | 0.9370 | 0.9149 | 0.9252 |
+| balanced accuracy | 0.9046 | 0.9045 | 0.8578 | 0.8716 |
+| precision / recall | 0.9588 / 0.9619 | 0.9602 / 0.9602 | 0.9366 / 0.9568 | 0.9391 / 0.9669 |
+| specificity | 0.8474 | 0.8488 | 0.7587 | 0.7764 |
+| F1 | 0.9603 | 0.9602 | 0.9466 | 0.9528 |
+| ROC-AUC | 0.9666 | 0.9722 | 0.9481 | 0.9687 |
+| AUPRC | 0.9883 | 0.9925 | 0.9828 | 0.9906 |
+| MCC | 0.8129 | 0.8090 | 0.7382 | 0.7746 |
+| Brier (calibrated) | 0.0512 | 0.0511 | 0.0677 | 0.0565 |
+| errors | 292 | 52 | 405 | 55 |
+| potency RMSE (LightGBM regressor) | 0.6373 | 0.5934 | 0.7880 | 0.6479 |
+| potency RMSE (V11c head) | 0.7429 | 0.6800 | 0.8606 | 0.7846 |
 
 ### Selective prediction (abstention cut fixed out-of-fold)
 
 | coverage | random OOF | random test | scaffold OOF | scaffold test |
 |---|---|---|---|---|
-| 100 % | 0.9381 | 0.9370 | 0.9153 | 0.9238 |
-| **95 %** | **0.9538** | **0.9537** | 0.9312 | **0.9498** |
-| 90 % | 0.9650 | 0.9650 | 0.9468 | 0.9550 |
-| 85 % | 0.9713 | 0.9727 | 0.9582 | 0.9694 |
+| 100 % | 0.9375 | 0.9370 | 0.9149 | 0.9252 |
+| **95 %** | **0.9549** | **0.9551** | 0.9317 | **0.9511** |
+| 90 % | 0.9643 | 0.9636 | 0.9475 | 0.9577 |
 
 ---
 
@@ -71,11 +72,11 @@ excluded from the model inputs by construction and is not required at prediction
 
 | comparison | random dAUC (p) | scaffold dAUC (p) |
 |---|---|---|
-| vs **LightGBM alone** | +0.0040 (**p < 1e-4**) | +0.0033 (**p = 0.0014**) |
-| vs **V5-MT alone** | +0.0033 (**p = 0.022**) | +0.0111 (**p < 1e-4**) |
-| vs **V3 (published)** | +0.0036 (**p = 0.0066**) | +0.0057 (**p = 0.0051**) |
-| vs **CheMeleon** (Burns 2025) | +0.0094 (**p = 0.0001**) | +0.0087 (**p = 0.0084**) |
-| vs **Chemprop v2** (Heid 2024) | +0.0330 (**p < 1e-4**) | +0.0457 (**p < 1e-4**) |
+| vs **LightGBM alone** | +0.0046 (**p < 1e-4**) | +0.0030 (**p = 0.0050**) |
+| vs **V11c alone** | +0.0040 (**p = 0.0123**) | +0.0135 (**p < 1e-4**) |
+| vs **V3 (published)** | +0.0042 (**p = 0.0023**) | +0.0055 (**p = 0.0125**) |
+| vs **CheMeleon** (Burns 2025) | +0.0100 (**p < 1e-4**) | +0.0085 (**p = 0.0138**) |
+| vs **Chemprop v2** (Heid 2024) | +0.0335 (**p < 1e-4**) | +0.0454 (**p < 1e-4**) |
 
 McNemar on per-molecule errors, out-of-fold: vs V3 p = 0.0050 (random) and 0.0350 (scaffold);
 vs CheMeleon p = 0.0150 (random); vs Chemprop p < 1e-4 (both).
@@ -89,15 +90,16 @@ on both splits.
 
 | | ours | CheMeleon | Chemprop |
 |---|---|---|---|
-| random OOF AUC | **0.9660** | 0.9566 | 0.9331 |
-| scaffold OOF AUC | **0.9483** | 0.9396 | 0.9027 |
-| random OOF potency RMSE | **0.6215** | 0.6349 | 0.7174 |
-| scaffold OOF potency RMSE | 0.7601 | **0.7583** | 0.8564 |
-| random OOF cliff RMSE | **0.6743** | 0.6930 | 0.7610 |
+| random OOF AUC | **0.9666** | 0.9566 | 0.9331 |
+| scaffold OOF AUC | **0.9481** | 0.9396 | 0.9027 |
+| random OOF potency RMSE (LightGBM regressor) | 0.6373 | **0.6349** | 0.7174 |
+| scaffold OOF potency RMSE | 0.7880 | **0.7583** | 0.8564 |
 
-Potency: clearly ahead of Chemprop (-0.096 RMSE, p < 1e-4 on both splits); ahead of CheMeleon on
-the random split (-0.0135, p = 0.029) and level on scaffold (+0.0018, p = 0.77). None of
-CheMeleon's test-set advantages are statistically significant (p = 0.07 - 0.66).
+Classification is a clear win on both splits. **Potency is not**: the proposed system's regressor
+(0.6373 random, 0.7880 scaffold) is level with CheMeleon on the random split and behind it on
+scaffold, though both are far ahead of Chemprop. Adding V8-R2 as a potency-only component would
+give 0.6215 / 0.7601 - ahead on random, level on scaffold - at the cost of a third network that
+reads training analogues at inference. That trade is documented, not taken.
 
 Classical baselines on the same folds, nested CV: SVM 0.9427 OOF AUC, Tanimoto k-NN 0.9240,
 k-NN (cosine) 0.9099 on the random split.
@@ -112,10 +114,11 @@ dataset**.
 
 | | error rate (all) | error rate (cliff) | penalty |
 |---|---|---|---|
-| proposed, random OOF | 0.0619 | 0.0783 | +0.0164 |
-| proposed, scaffold OOF | 0.0847 | 0.1065 | +0.0218 |
+| proposed, random OOF | 0.0625 | 0.0794 | +0.0169 |
+| proposed, scaffold OOF | 0.0851 | 0.1068 | +0.0217 |
 
-Our cliff RMSE (0.6743 random OOF) is the best of any model tested, ahead of CheMeleon's 0.6930.
+On cliff RMSE the LightGBM regressor gives 0.6801 (random OOF) against CheMeleon's 0.6930; the
+V8-R2 alternative would give 0.6743.
 
 ---
 
@@ -159,11 +162,11 @@ same finding on the earlier MoLFormer stack. The D-MPNN branch contributes nothi
 ## 8. Claims that are supported
 
 1. The proposed model significantly outperforms the published V3 model out-of-fold on both splits.
-2. It significantly outperforms each of its own components — LightGBM alone and V5-MT alone — on
+2. It significantly outperforms each of its own components — LightGBM alone and V11c alone — on
    both splits.
 3. It significantly outperforms Chemprop v2 and CheMeleon on classification, out-of-fold, on both
    splits, with their authors' implementations run on our folds.
-4. On potency it is ahead of CheMeleon on the random split and level on the scaffold split; both are
+4. On potency it is level with CheMeleon on the random split and behind it on scaffold; both are
    far ahead of Chemprop.
 5. 95 % accuracy is achievable through selective prediction: 95.4 % at 95 % coverage (random).
 6. Classification accuracy is bounded by potency precision; the label ceiling is 99.6 %.
@@ -175,16 +178,16 @@ same finding on the earlier MoLFormer stack. The D-MPNN branch contributes nothi
 * "95 % accuracy" without stating the 95 % coverage condition.
 * "We beat the state of the art on potency" — it is a tie on the scaffold split and on both test sets.
 * "Architectural gains transfer to novel scaffolds" — the retrieval module (V8-R2) significantly
-  degrades there (-0.011 AUC, p = 0.002), which is why the proposed classifier uses V5-MT.
+  degrades there (-0.011 AUC, p = 0.002), which is one reason the proposed model omits it.
 * Any claim resting on the held-out test sets alone; at n = 735-825 the standard error is +-0.84 %.
 
 ## 10. Limitations to disclose
 
-1. **pIC50 as auxiliary supervision.** In V5-MT, pIC50 is a training target only, never a model
-   input, and is not required at prediction time; all compared methods received the same
-   supervision. Removing it costs 0.006-0.008 MCC. (The potency model V8-R2 does read the measured
-   pIC50 of retrieved *training* analogues at inference — the same category as a k-NN using training
-   labels; retrieval is fold-safe and verified by tests/test_v6_retrieval.py.)
+1. **pIC50 as training supervision.** In V11c, pIC50 is a training target only - never a model
+   input, and not required at prediction time; all compared methods received the same supervision.
+   The proposed system contains no retrieval module, so nothing reads another molecule's measured
+   potency at inference. (The documented V8-R2 alternative does; it is fold-safe and verified by
+   tests/test_v6_retrieval.py, but it is not part of the proposed model.)
 2. **One scaffold partition**, with 3 training seeds.
 3. **Ablations are single-seed**; differences below ~0.005 MCC are not individually meaningful.
 4. **The 2 : 1 weight was prespecified, not tuned**; a sweep over w = 0.1-0.5 changes OOF MCC by
