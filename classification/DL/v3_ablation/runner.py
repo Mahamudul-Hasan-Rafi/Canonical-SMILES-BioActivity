@@ -74,7 +74,8 @@ def _run_job(args):
             tr_idx, vl_idx, te_idx = tr_idx[:512], vl_idx[:256], te_idx[:128]
         log(f"START {jid}{' (smoke)' if smoke else ''}")
         out = _W["core"].train_one(cfg, _W["feats"], tr_idx, vl_idx, {"test": te_idx}, E.train_seed(j),
-                                   _W["device"], _get("tok", j["backbone"]), log=log, guard=_W["guard"])
+                                   _W["device"], _get("tok", j["backbone"]), log=log, guard=_W["guard"],
+                                   return_pic50=True)
         meta = {k: out[k] for k in ("best_val_auc", "best_epoch", "epochs_run", "train_seconds",
                                     "history", "n_trainable")}
         meta.update(id=jid, job=j, cfg=cfg.to_dict(), cfg_hash=h, code="core.py",
@@ -84,8 +85,13 @@ def _run_job(args):
             log(f"SMOKE {jid} ok  valAUC={out['best_val_auc']:.3f}  {out['train_seconds']:.0f}s  "
                 f"trainable={out['n_trainable']/1e6:.1f}M")
             return jid, meta
-        np.savez(os.path.join(STORE, jid + ".npz"), val_probs=out["val_probs"], val_labels=out["val_labels"],
-                 test_probs=out["test_probs"], test_labels=out["test_labels"], val_idx=vl_idx, test_idx=te_idx)
+        arrays = dict(val_probs=out["val_probs"], val_labels=out["val_labels"],
+                      test_probs=out["test_probs"], test_labels=out["test_labels"],
+                      val_idx=vl_idx, test_idx=te_idx)
+        for k in ("val_pic50", "test_pic50"):     # present whenever the model has a potency head
+            if k in out:
+                arrays[k] = out[k]
+        np.savez(os.path.join(STORE, jid + ".npz"), **arrays)
         tmp = os.path.join(STORE, jid + ".json.tmp")
         with open(tmp, "w") as fh:
             json.dump(meta, fh)

@@ -654,6 +654,13 @@ VARIANTS = {
                         dict(_V4A, graph=True, new_lr_mult=10.0, task="reg", sampler=False,
                              select_metric="rmse", retrieval=5, delta_w=0.16425927623668438,
                              hp_override={"num_heads": 4, "hidden_dim": 256, "dropout": 0.2, "num_classifier_layers": 4, "n_cross_layers": 2, "batch_size": 32, "learning_rate": 1.980912684420755e-05, "weight_decay": 0.0007342711722597161})),
+    # V11: one network for both tasks - the potency head trained at a real weight, no retrieval
+    "mt_w05":            ("V11a: V5-MT with the potency loss at weight 0.5 (balanced multi-task)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.5)),
+    "mt_w10":            ("V11b: V5-MT with the potency loss at weight 1.0 (equal multi-task)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=1.0)),
+    "mt_w10_ns":         ("V11c: weight 1.0 and no class sampler (the sampler distorts the potency distribution)",
+                        dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=1.0, sampler=False)),
     # Module and view ablations of the current deep branch (one seed, both splits)
     "mt_no_smiles":      ("V5-MT ablation: - SMILES language-model view",
                         dict(_V4A, graph=True, new_lr_mult=10.0, aux_pic50=0.1, modalities=("ecfp", "maccs", "desc"))),
