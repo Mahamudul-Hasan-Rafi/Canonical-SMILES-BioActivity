@@ -743,6 +743,29 @@ def setup_torch():
 
 
 @torch.no_grad()
+def predict_pic50(model, ds, device, collate, batch_size=64, eval_seed=7, amp_dtype=torch.bfloat16):
+    """Predicted pIC50 from the regression head. For V5-MT this is the auxiliary head, whose
+    output is discarded during normal scoring; here it is read out explicitly."""
+    model.eval()
+    cpu_state = torch.get_rng_state()
+    if eval_seed is not None:
+        torch.manual_seed(eval_seed)
+    zs = []
+    try:
+        for i in range(0, len(ds), batch_size):
+            b = collate([ds[j] for j in range(i, min(i + batch_size, len(ds)))])
+            with torch.no_grad(), torch.autocast(device_type=device.type, dtype=amp_dtype,
+                                                 enabled=device.type == "cuda"):
+                out = model(**{k: v.to(device, non_blocking=True) for k, v in b.items()
+                               if k not in ("labels", "pic50", "aux")}, return_reg=True)
+            zs.append(np.atleast_1d(out[1].float().cpu().numpy()))
+    finally:
+        torch.set_rng_state(cpu_state)
+    z = np.concatenate(zs)
+    return z * float(model.pic_sd) + float(model.pic_mu)
+
+
+@torch.no_grad()
 def predict(model, ds, device, collate, batch_size=64, eval_seed=None, amp_dtype=torch.bfloat16):
     """Probabilities for ds. MoLFormer redraws its random attention features on every
     forward pass; eval_seed makes that draw repeatable without touching the training RNG."""
@@ -816,7 +839,7 @@ def tta_predict(model, ds, device, collate, k, eval_seed=7):
 
 
 def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, device,
-              tokenizer, log=print, guard=None, save_path=None, on_epoch=None):
+              tokenizer, log=print, guard=None, save_path=None, on_epoch=None, return_pic50=False):
     """Train on tr_idx, early-stop on AUROC of vl_idx; return predictions of the best
     checkpoint on vl_idx and on every eval set (optionally save that checkpoint)."""
     from sklearn.metrics import roc_auc_score
@@ -976,6 +999,10 @@ def train_one(cfg: RunCfg, feats, tr_idx, vl_idx, eval_sets: dict, seed: int, de
     for k, ds in ev_ds.items():
         out[f"{k}_probs"] = final(ds)
         out[f"{k}_labels"] = ds.labels
+    if return_pic50 and hasattr(model, "reg_head"):     # read out the potency head explicitly
+        out["val_pic50"] = predict_pic50(model, vl_ds, device, collate)
+        for k, ds in ev_ds.items():
+            out[f"{k}_pic50"] = predict_pic50(model, ds, device, collate)
     out.update(best_val_auc=float(best_auc), best_epoch=best_ep, epochs_run=len(history),
                train_seconds=train_s, history=history,
                n_trainable=sum(p.numel() for p in model.parameters() if p.requires_grad))
